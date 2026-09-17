@@ -4,6 +4,7 @@ import (
 	"butaq/lexer"
 	"fmt"
 	"strconv"
+	"strings"
 )
 
 type ParseError struct {
@@ -239,13 +240,334 @@ func (p *Parser) parseInterfaceStatement() *InterfaceStatement {
 // Statement dispatch
 // ---------------------------------------------------------------------------
 
+const (
+	PREC_LOWEST  = 0
+	PREC_OR      = 1
+	PREC_AND     = 2
+	PREC_EQUALS  = 3
+	PREC_COMPARE = 4
+	PREC_SUM     = 5
+	PREC_PRODUCT = 6
+	PREC_PREFIX  = 7
+	PREC_CALL    = 8
+)
+
+func (p *Parser) tokenPrecedence(tt lexer.TokenType) int {
+	switch tt {
+	case lexer.OR:
+		return PREC_OR
+	case lexer.AND:
+		return PREC_AND
+	case lexer.EQ, lexer.NEQ:
+		return PREC_EQUALS
+	case lexer.LT, lexer.LTE, lexer.GT, lexer.GTE:
+		return PREC_COMPARE
+	case lexer.PLUS, lexer.MINUS:
+		return PREC_SUM
+	case lexer.MUL, lexer.DIV:
+		return PREC_PRODUCT
+	default:
+		return PREC_LOWEST
+	}
+}
+
+func (p *Parser) isStartOfInfixExpr() bool {
+	switch p.curToken.Type {
+	case lexer.INT_LITERAL, lexer.NUMBER, lexer.STRING, lexer.TRUE, lexer.FALSE,
+		lexer.IDENTIFIER, lexer.NOT, lexer.MINUS, lexer.LPAREN, lexer.LBRACKET:
+		return true
+	default:
+		return false
+	}
+}
+
+func (p *Parser) parseInfixExpression(precedence int) Expression {
+	line, col := p.curToken.Line, p.curToken.Col
+	var left Expression
+
+	switch p.curToken.Type {
+	case lexer.INT_LITERAL:
+		val, _ := strconv.ParseInt(p.curToken.Literal, 10, 64)
+		left = p.setPosAt(&IntLiteral{Value: val}, line, col).(Expression)
+	case lexer.NUMBER:
+		val, _ := strconv.ParseFloat(p.curToken.Literal, 64)
+		left = p.setPosAt(&NumberLiteral{Value: val}, line, col).(Expression)
+	case lexer.STRING:
+		left = p.setPosAt(&StringLiteral{Value: p.curToken.Literal}, line, col).(Expression)
+	case lexer.TRUE:
+		left = p.setPosAt(&BoolLiteral{Value: true}, line, col).(Expression)
+	case lexer.FALSE:
+		left = p.setPosAt(&BoolLiteral{Value: false}, line, col).(Expression)
+	case lexer.NOT:
+		p.nextToken()
+		right := p.parseInfixExpression(PREC_PREFIX)
+		left = p.setPosAt(&UnaryExpression{Operator: "емес", Right: right}, line, col).(Expression)
+	case lexer.MINUS:
+		p.nextToken()
+		right := p.parseInfixExpression(PREC_PREFIX)
+		left = p.setPosAt(&PostfixExpression{
+			Left:     &IntLiteral{Value: 0},
+			Right:    right,
+			Operator: "алу",
+		}, line, col).(Expression)
+	case lexer.LPAREN:
+		p.nextToken()
+		left = p.parseInfixExpression(PREC_LOWEST)
+		if p.peekToken.Type == lexer.RPAREN {
+			p.nextToken()
+		}
+	case lexer.LBRACKET:
+		var elements []Expression
+		if p.peekToken.Type != lexer.RBRACKET {
+			p.nextToken() // cur = first element
+			for p.curToken.Type != lexer.RBRACKET && p.curToken.Type != lexer.EOF {
+				elem := p.parseInfixExpression(PREC_LOWEST)
+				if elem != nil {
+					elements = append(elements, elem)
+				}
+				if p.peekToken.Type == lexer.COMMA {
+					p.nextToken() // cur = ,
+					p.nextToken() // cur = next elem
+				} else if p.peekToken.Type == lexer.RBRACKET {
+					p.nextToken() // cur = ]
+					break
+				} else {
+					p.nextToken()
+				}
+			}
+		} else {
+			p.nextToken() // cur = ]
+		}
+		left = p.setPosAt(&ArrayLiteral{Elements: elements}, line, col).(Expression)
+	case lexer.IDENTIFIER:
+		id := p.curToken.Literal
+		if p.peekToken.Type == lexer.LPAREN {
+			left = p.parseCallExpression(id, line, col)
+		} else if strings.Contains(id, ".") {
+			parts := strings.Split(id, ".")
+			left = p.setPosAt(&StructFieldAccessExpression{
+				StructName: parts[0],
+				Field:      parts[1],
+			}, line, col).(Expression)
+		} else {
+			left = p.setPosAt(&Identifier{Value: id}, line, col).(Expression)
+		}
+	default:
+		return nil
+	}
+
+	for p.peekToken.Type == lexer.LBRACKET {
+		p.nextToken() // cur = [
+		p.nextToken() // cur = start of index
+		idx := p.parseInfixExpression(PREC_LOWEST)
+		if p.peekToken.Type == lexer.RBRACKET {
+			p.nextToken() // cur = ]
+		}
+		left = p.setPosAt(&IndexExpression{
+			Left:  left,
+			Index: idx,
+		}, line, col).(Expression)
+	}
+
+	for p.peekToken.Type != lexer.EOF &&
+		p.peekToken.Type != lexer.THEN &&
+		p.peekToken.Type != lexer.COMMA &&
+		p.peekToken.Type != lexer.RPAREN &&
+		p.peekToken.Type != lexer.RBRACKET &&
+		p.peekToken.Type != lexer.COLON &&
+		precedence < p.tokenPrecedence(p.peekToken.Type) {
+
+		p.nextToken() // cur = operator
+		opTok := p.curToken
+		prec := p.tokenPrecedence(opTok.Type)
+		p.nextToken() // cur = start of right expression
+		right := p.parseInfixExpression(prec)
+		left = p.setPosAt(&PostfixExpression{
+			Left:     left,
+			Right:    right,
+			Operator: canonicalOp(opTok),
+		}, line, col).(Expression)
+	}
+
+	return left
+}
+
+func (p *Parser) parseIndentedBlock(parentCol int) *BlockStatement {
+	block := &BlockStatement{Statements: []Statement{}}
+	p.setPosAt(block, p.curToken.Line, p.curToken.Col)
+
+	startLine := p.curToken.Line
+	for p.peekToken.Type != lexer.EOF {
+		if p.peekToken.Line > startLine && p.peekToken.Col <= parentCol {
+			break
+		}
+		if p.peekToken.Type == lexer.RBRACE || p.peekToken.Type == lexer.ELSE || p.peekToken.Type == lexer.FUNC {
+			break
+		}
+		p.nextToken()
+		if p.curToken.Type == lexer.COLON {
+			continue
+		}
+		stmt := p.parseStatement()
+		if stmt != nil {
+			block.Statements = append(block.Statements, stmt)
+		}
+	}
+	return block
+}
+
 func (p *Parser) parseStatement() Statement {
+	line, col := p.curToken.Line, p.curToken.Col
+
+	// 1. Modern VAR: болсын i = 0 / let i = 0 / sia i = 0 / пусть i = 0
+	if p.curToken.Type == lexer.VAR && p.peekToken.Type == lexer.IDENTIFIER {
+		p.nextToken() // cur = identifier
+		varName := p.curToken.Literal
+		idNode := p.setPos(&Identifier{Value: varName}).(*Identifier)
+		if p.peekToken.Type == lexer.ASSIGN {
+			p.nextToken() // cur = =
+			p.nextToken() // cur = start of value expr
+			val := p.parseInfixExpression(PREC_LOWEST)
+			stmt := &VarAssignStatement{Name: idNode, Value: val, IsDeclaration: true}
+			p.setPosAt(stmt, line, col)
+			return stmt
+		}
+	}
+
+	// 2. Modern Assignment: i = expr
+	if p.curToken.Type == lexer.IDENTIFIER && p.peekToken.Type == lexer.ASSIGN {
+		varName := p.curToken.Literal
+		idNode := p.setPos(&Identifier{Value: varName}).(*Identifier)
+		p.nextToken() // cur = =
+		p.nextToken() // cur = start of value expr
+		val := p.parseInfixExpression(PREC_LOWEST)
+		stmt := &VarAssignStatement{Name: idNode, Value: val, IsDeclaration: false}
+		p.setPosAt(stmt, line, col)
+		return stmt
+	}
+
+	// 2b. Modern Array Index Assignment: arr[idx] = expr
+	if p.curToken.Type == lexer.IDENTIFIER && p.peekToken.Type == lexer.LBRACKET {
+		arrName := p.curToken.Literal
+		idNode := p.setPos(&Identifier{Value: arrName}).(*Identifier)
+		p.nextToken() // cur = [
+		p.nextToken() // cur = start of index expr
+		idxExpr := p.parseInfixExpression(PREC_LOWEST)
+		if p.peekToken.Type == lexer.RBRACKET {
+			p.nextToken() // cur = ]
+		}
+		if p.peekToken.Type == lexer.ASSIGN {
+			p.nextToken() // cur = =
+			p.nextToken() // cur = start of value expr
+			valExpr := p.parseInfixExpression(PREC_LOWEST)
+			stmt := &IndexAssignStatement{Array: idNode, Index: idxExpr, Value: valExpr}
+			p.setPosAt(stmt, line, col)
+			return stmt
+		}
+	}
+
+	// 3. Modern Print: жазу(a, b, c) / print(...) / stampa(...) / печать(...)
+	if p.curToken.Type == lexer.PRINT && p.peekToken.Type == lexer.LPAREN {
+		p.nextToken() // cur = (
+		p.nextToken() // cur = first arg or )
+		var vals []Expression
+		for p.curToken.Type != lexer.RPAREN && p.curToken.Type != lexer.EOF {
+			expr := p.parseInfixExpression(PREC_LOWEST)
+			if expr != nil {
+				vals = append(vals, expr)
+			}
+			if p.peekToken.Type == lexer.COMMA {
+				p.nextToken() // cur = ,
+				p.nextToken() // cur = next arg
+			} else if p.peekToken.Type == lexer.RPAREN {
+				p.nextToken() // cur = )
+				break
+			} else {
+				p.nextToken()
+			}
+		}
+		stmt := &PrintStatement{Values: vals}
+		p.setPosAt(stmt, line, col)
+		return stmt
+	}
+
+	// 4. Modern Return: қайтару expr / return expr / ritorna expr / вернуть expr
+	if p.curToken.Type == lexer.RETURN {
+		p.nextToken() // cur = start of expr
+		val := p.parseInfixExpression(PREC_LOWEST)
+		stmt := &ReturnStatement{Value: val}
+		p.setPosAt(stmt, line, col)
+		return stmt
+	}
+
+	// 5. Modern IF: егер cond сонда stmt OR егер cond block
+	if p.curToken.Type == lexer.IF {
+		p.nextToken() // cur = start of condition
+		cond := p.parseInfixExpression(PREC_LOWEST)
+		stmt := &IfStatement{Condition: cond}
+		p.setPosAt(stmt, line, col)
+
+		// Check for THEN: сонда / then / allora / тогда
+		if p.peekToken.Type == lexer.THEN {
+			p.nextToken() // cur = THEN
+			p.nextToken() // cur = start of then statement
+			thenStmt := p.parseStatement()
+			stmt.Consequence = &BlockStatement{Statements: []Statement{thenStmt}}
+			return stmt
+		}
+
+		if p.peekToken.Type == lexer.LBRACE {
+			p.nextToken() // cur = {
+			stmt.Consequence = p.parseBlockStatement()
+		} else {
+			if p.peekToken.Type == lexer.COLON {
+				p.nextToken()
+			}
+			stmt.Consequence = p.parseIndentedBlock(col)
+		}
+
+		if p.peekToken.Type == lexer.ELSE {
+			p.nextToken() // cur = ELSE
+			if p.peekToken.Type == lexer.LBRACE {
+				p.nextToken() // cur = {
+				stmt.Alternative = p.parseBlockStatement()
+			} else {
+				if p.peekToken.Type == lexer.COLON {
+					p.nextToken()
+				}
+				stmt.Alternative = p.parseIndentedBlock(col)
+			}
+		}
+
+		return stmt
+	}
+
+	// 6. Modern WHILE: әзірше cond block
+	if p.curToken.Type == lexer.WHILE {
+		p.nextToken() // cur = start of condition
+		cond := p.parseInfixExpression(PREC_LOWEST)
+		stmt := &WhileStatement{Condition: cond}
+		p.setPosAt(stmt, line, col)
+
+		if p.peekToken.Type == lexer.LBRACE {
+			p.nextToken() // cur = {
+			stmt.Body = p.parseBlockStatement()
+		} else {
+			if p.peekToken.Type == lexer.COLON {
+				p.nextToken()
+			}
+			stmt.Body = p.parseIndentedBlock(col)
+		}
+		return stmt
+	}
+
+	// 7. Fallback to legacy SOV parser
 	node := p.parseExpression()
 	if node == nil {
 		return nil
 	}
-	if stmt, ok := node.(Statement); ok {
-		return stmt
+	if s, ok := node.(Statement); ok {
+		return s
 	}
 	if expr, ok := node.(Expression); ok {
 		el, ec := expr.Position()
@@ -257,7 +579,7 @@ func (p *Parser) parseStatement() Statement {
 }
 
 // ---------------------------------------------------------------------------
-// Function definition: функция атауы(x, y) { ... }
+// Function definition: функция атауы(x, y) [block]
 // ---------------------------------------------------------------------------
 
 func (p *Parser) parseFunctionStatement() *FunctionStatement {
@@ -289,18 +611,23 @@ func (p *Parser) parseFunctionStatement() *FunctionStatement {
 		}
 	}
 	// cur = )
-	p.nextToken() // cur = {
-
-	if p.curToken.Type != lexer.LBRACE {
-		p.errorf("'{' күтілді функция денесінде, бірақ '%s' табылды", p.curToken.Literal)
-		return nil
+	if p.peekToken.Type == lexer.COLON {
+		p.nextToken() // consume optional colon
 	}
-	body := p.parseBlockStatement()
+
+	var body *BlockStatement
+	if p.peekToken.Type == lexer.LBRACE {
+		p.nextToken() // cur = {
+		body = p.parseBlockStatement()
+	} else {
+		body = p.parseIndentedBlock(col)
+	}
 
 	res := &FunctionStatement{Name: name, Parameters: params, Body: body}
 	p.setPosAt(res, line, col)
 	return res
 }
+
 
 // ---------------------------------------------------------------------------
 // Main expression parser (stack-based SOV)
@@ -400,7 +727,8 @@ func (p *Parser) parseExpression() Node {
 			right := stack[len(stack)-1].(Expression)
 			left := stack[len(stack)-2].(Expression)
 			stack = stack[:len(stack)-2]
-			stack = append(stack, p.setPos(&PostfixExpression{Left: left, Right: right, Operator: p.curToken.Literal}))
+			stack = append(stack, p.setPos(&PostfixExpression{Left: left, Right: right, Operator: canonicalOp(p.curToken)}))
+
 
 		// --- Unary NOT ---
 		case lexer.NOT:
@@ -761,7 +1089,7 @@ func (p *Parser) parseExpression() Node {
 				return nil
 			}
 
-			stmt := &VarAssignStatement{Name: idNode, Value: val}
+			stmt := &VarAssignStatement{Name: idNode, Value: val, IsDeclaration: true}
 			p.setPos(stmt)
 			stack = append(stack, stmt)
 			return stack[0]
@@ -824,7 +1152,7 @@ func (p *Parser) parseExpression() Node {
 				return nil
 			}
 			stack = stack[:len(stack)-2]
-			stmt := &VarAssignStatement{Name: ident, Value: value}
+			stmt := &VarAssignStatement{Name: ident, Value: value, IsDeclaration: true}
 			p.setPos(stmt)
 			stack = append(stack, stmt)
 			return stack[0]
@@ -855,12 +1183,26 @@ func (p *Parser) parseCallExpression(name string, line, col int) *CallExpression
 
 	var args []Expression
 	for p.curToken.Type != lexer.RPAREN && p.curToken.Type != lexer.EOF {
-		expr := p.parseArgExpression()
+		var expr Expression
+		if p.isStartOfInfixExpr() {
+			expr = p.parseInfixExpression(PREC_LOWEST)
+		}
+		if expr == nil {
+			expr = p.parseArgExpression()
+		}
 		if expr != nil {
 			args = append(args, expr)
 		}
-		if p.curToken.Type == lexer.COMMA {
+		if p.peekToken.Type == lexer.COMMA {
+			p.nextToken() // cur = ,
+			p.nextToken() // cur = next arg
+		} else if p.peekToken.Type == lexer.RPAREN {
+			p.nextToken() // cur = )
+			break
+		} else if p.curToken.Type == lexer.COMMA {
 			p.nextToken()
+		} else {
+			break
 		}
 	}
 	// cur = )
@@ -962,7 +1304,7 @@ func (p *Parser) parseArgExpression() Expression {
 				right := stack[len(stack)-1]
 				left := stack[len(stack)-2]
 				stack = stack[:len(stack)-2]
-				stack = append(stack, p.setPos(&PostfixExpression{Left: left, Right: right, Operator: p.curToken.Literal}).(Expression))
+				stack = append(stack, p.setPos(&PostfixExpression{Left: left, Right: right, Operator: canonicalOp(p.curToken)}).(Expression))
 			}
 		case lexer.NOT:
 			if len(stack) >= 1 {
@@ -1120,3 +1462,39 @@ func (p *Parser) parseBlockStatement() *BlockStatement {
 	p.setPosAt(block, line, col)
 	return block
 }
+
+func canonicalOp(tok lexer.Token) string {
+	switch tok.Type {
+	case lexer.PLUS:
+		return "қосу"
+	case lexer.MINUS:
+		return "алу"
+	case lexer.MUL:
+		return "көбейту"
+	case lexer.DIV:
+		return "бөлу"
+	case lexer.GT:
+		return "үлкен"
+	case lexer.LT:
+		return "кіші"
+	case lexer.EQ:
+		return "тең"
+	case lexer.NEQ:
+		return "тең_емес"
+	case lexer.GTE:
+		return "үлкен_тең"
+	case lexer.LTE:
+		return "кіші_тең"
+	case lexer.AND:
+		return "және"
+	case lexer.OR:
+		return "немесе"
+	case lexer.LSHIFT:
+		return "жылжыту_сол"
+	case lexer.RSHIFT:
+		return "жылжыту_оң"
+	default:
+		return tok.Literal
+	}
+}
+

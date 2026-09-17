@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Butaq Тілінің Интерактивті Алаңы (Interactive Playground)</title>
+    <title>Butaq — Zero-Cost Localized System-Level Compiler (Playground)</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
@@ -16,19 +16,35 @@
         <header>
             <div class="logo">
                 <span class="logo-icon">🌱</span>
-                <h1>Butaq <span class="accent">Playground</span></h1>
+                <div>
+                    <h1>Butaq <span class="accent">Playground</span></h1>
+                    <div class="tagline">Zero-Cost Localized System-Level Compiler (KZ • EN • IT • RU)</div>
+                </div>
             </div>
             <div class="controls">
                 <div class="select-wrapper">
-                    <select id="examples-dropdown">
-                        <option value="hello">Сәлем, Әлем!</option>
-                        <option value="math">Математика</option>
-                        <option value="loop">Цикл (әзірше)</option>
-                        <option value="func">Функция</option>
+                    <select id="examples-dropdown" title="Мысалдар / Examples">
+                        <option value="fib">🌟 Фибоначчи (Fibonacci)</option>
+                        <option value="donut">🍩 3D Donut (Raymarching)</option>
+                        <option value="hello">Сәлем, Әлем! (Hello World)</option>
+                        <option value="math">Математика (Math SOV)</option>
+                        <option value="loop">Цикл (әзірше / While)</option>
+                        <option value="func">Функция (Functions)</option>
                         <option value="struct">Құрылымдар (Structs)</option>
                     </select>
                 </div>
-                <button id="run-btn" class="glow-on-hover">
+                <div class="select-wrapper">
+                    <select id="target-locale-select" title="Мақсатты тіл / Target Language">
+                        <option value="en">🇬🇧 EN (English)</option>
+                        <option value="it">🇮🇹 IT (Italiano)</option>
+                        <option value="ru">🇷🇺 RU (Русский)</option>
+                        <option value="kk">🇰🇿 KK (Қазақша)</option>
+                    </select>
+                </div>
+                <button id="transpile-btn" class="transpile-btn" title="AST арқылы кодты таңдалған тілге транспиляциялау">
+                    <span class="btn-icon">🔄</span> Транспиляция
+                </button>
+                <button id="run-btn" class="glow-on-hover" title="WASM арқылы орындау">
                     <span class="btn-icon">▶</span> Іске қосу
                 </button>
             </div>
@@ -39,9 +55,13 @@
             <!-- Code Editor Section -->
             <section class="editor-section card">
                 <div class="card-header">
-                    <h2>📝btq Код редакторы</h2>
+                    <div style="display: flex; align-items: center; gap: 0.75rem;">
+                        <h2>📝 btq Редактор</h2>
+                        <span id="detected-locale-badge" class="locale-badge">Тіл: KK</span>
+                    </div>
                     <span class="status-indicator" id="compiler-status">Жүктелуде...</span>
                 </div>
+                <div id="transpile-toast" class="transpile-toast hidden"></div>
                 <div class="editor-container">
                     <div class="line-numbers" id="line-numbers">1</div>
                     <textarea id="code-editor" spellcheck="false" placeholder="# Осында Butaq кодын жазыңыз..."></textarea>
@@ -54,6 +74,7 @@
                     <button class="tab-btn active" data-tab="output">Нәтиже (Output)</button>
                     <button class="tab-btn" data-tab="llvm">LLVM IR</button>
                     <button class="tab-btn" data-tab="nasm">NASM Assembly</button>
+                    <button class="tab-btn" data-tab="bench">⚡ Benchmark</button>
                 </div>
                 <div class="tab-contents">
                     <div class="tab-pane active" id="output-pane">
@@ -64,6 +85,70 @@
                     </div>
                     <div class="tab-pane" id="nasm-pane">
                         <pre id="nasm-console" class="code-output">Генерацияланған NASM ассемблер коды...</pre>
+                    </div>
+                    <div class="tab-pane" id="bench-pane">
+                        <div class="bench-container">
+                            <div class="bench-header">
+                                <div class="bench-title">⚡ Live Performance Benchmark</div>
+                                <div class="bench-subtitle">Fibonacci(28) · Interpreter · All Locales</div>
+                            </div>
+                            <div class="bench-controls">
+                                <button id="bench-run-btn" class="bench-btn">
+                                    <span class="bench-btn-icon">▶</span> Запустить тест
+                                </button>
+                                <div class="bench-n-control">
+                                    <label for="bench-n">fib(n):</label>
+                                    <input type="number" id="bench-n" value="28" min="5" max="35" />
+                                </div>
+                            </div>
+                            <div id="bench-results" class="bench-results">
+                                <div class="bench-locale" id="bench-kk">
+                                    <div class="bench-locale-header">
+                                        <span class="bench-flag">🇰🇿</span>
+                                        <span class="bench-lang-name">Қазақша (KK)</span>
+                                        <span class="bench-time" id="bench-time-kk">—</span>
+                                    </div>
+                                    <div class="bench-bar-track">
+                                        <div class="bench-bar" id="bench-bar-kk" style="width:0%"></div>
+                                    </div>
+                                    <div class="bench-output" id="bench-out-kk"></div>
+                                </div>
+                                <div class="bench-locale" id="bench-en">
+                                    <div class="bench-locale-header">
+                                        <span class="bench-flag">🇬🇧</span>
+                                        <span class="bench-lang-name">English (EN)</span>
+                                        <span class="bench-time" id="bench-time-en">—</span>
+                                    </div>
+                                    <div class="bench-bar-track">
+                                        <div class="bench-bar" id="bench-bar-en" style="width:0%"></div>
+                                    </div>
+                                    <div class="bench-output" id="bench-out-en"></div>
+                                </div>
+                                <div class="bench-locale" id="bench-it">
+                                    <div class="bench-locale-header">
+                                        <span class="bench-flag">🇮🇹</span>
+                                        <span class="bench-lang-name">Italiano (IT)</span>
+                                        <span class="bench-time" id="bench-time-it">—</span>
+                                    </div>
+                                    <div class="bench-bar-track">
+                                        <div class="bench-bar" id="bench-bar-it" style="width:0%"></div>
+                                    </div>
+                                    <div class="bench-output" id="bench-out-it"></div>
+                                </div>
+                                <div class="bench-locale" id="bench-ru">
+                                    <div class="bench-locale-header">
+                                        <span class="bench-flag">🇷🇺</span>
+                                        <span class="bench-lang-name">Русский (RU)</span>
+                                        <span class="bench-time" id="bench-time-ru">—</span>
+                                    </div>
+                                    <div class="bench-bar-track">
+                                        <div class="bench-bar" id="bench-bar-ru" style="width:0%"></div>
+                                    </div>
+                                    <div class="bench-output" id="bench-out-ru"></div>
+                                </div>
+                            </div>
+                            <div id="bench-verdict" class="bench-verdict hidden"></div>
+                        </div>
                     </div>
                 </div>
             </section>

@@ -142,7 +142,13 @@ func (l *Linter) checkNode(node parser.Node, scope *LinterScope) {
 		scope.Read(n.Value)
 
 	case *parser.PrintStatement:
-		l.checkNode(n.Value, scope)
+		if len(n.Values) > 0 {
+			for _, v := range n.Values {
+				l.checkNode(v, scope)
+			}
+		} else {
+			l.checkNode(n.Value, scope)
+		}
 
 	case *parser.IfStatement:
 		l.checkNode(n.Condition, scope)

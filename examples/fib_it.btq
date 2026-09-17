@@ -1,0 +1,10 @@
+funzione fib(n)
+    se n <= 1 allora ritorna n
+    ritorna fib(n - 1) + fib(n - 2)
+
+stampa("=== Serie di Fibonacci ===")
+
+sia i = 0
+mentre i <= 10
+    stampa("fib(", i, ") = ", fib(i))
+    i = i + 1

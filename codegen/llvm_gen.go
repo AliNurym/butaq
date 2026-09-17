@@ -221,6 +221,8 @@ func (lg *LlvmGenerator) Generate(program *parser.Program) string {
 	lg.prototypes.WriteString("declare double @builtin_math_pi()\n")
 	lg.prototypes.WriteString("declare double @builtin_math_exp(double)\n")
 	lg.prototypes.WriteString("declare double @builtin_sqrt(double)\n")
+	lg.prototypes.WriteString("declare double @builtin_sin(double)\n")
+	lg.prototypes.WriteString("declare double @builtin_cos(double)\n")
 
 	// 2. Generate Struct Destructors
 	lg.genStructDestructors()
@@ -623,38 +625,46 @@ func (lg *LlvmGenerator) genStatement(node parser.Statement, buf *strings.Builde
 		}
 
 	case *parser.PrintStatement:
-		valReg, valType := lg.genExpression(n.Value, buf)
-		var formatLabel string
-		if valType == typechecker.STRING_TYPE {
-			formatLabel = lg.getOrStr("%s\n")
-			formatPtr := lg.newReg()
-			buf.WriteString(fmt.Sprintf("  %s = getelementptr { i64, i8*, [4 x i8] }, { i64, i8*, [4 x i8] }* %s, i64 0, i32 2, i64 0\n", formatPtr, formatLabel))
-			buf.WriteString(fmt.Sprintf("  call i32 (i8*, ...) @printf(i8* %s, i8* %s)\n", formatPtr, valReg))
-		} else if valType == typechecker.INT_TYPE {
-			formatLabel = lg.getOrStr("%lld\n")
-			formatPtr := lg.newReg()
-			buf.WriteString(fmt.Sprintf("  %s = getelementptr { i64, i8*, [6 x i8] }, { i64, i8*, [6 x i8] }* %s, i64 0, i32 2, i64 0\n", formatPtr, formatLabel))
-			buf.WriteString(fmt.Sprintf("  call i32 (i8*, ...) @printf(i8* %s, i64 %s)\n", formatPtr, valReg))
-		} else if valType == typechecker.BOOL_TYPE {
-			// print true/false or 1/0
-			formatLabel = lg.getOrStr("%d\n")
-			formatPtr := lg.newReg()
-			buf.WriteString(fmt.Sprintf("  %s = getelementptr { i64, i8*, [4 x i8] }, { i64, i8*, [4 x i8] }* %s, i64 0, i32 2, i64 0\n", formatPtr, formatLabel))
-			extReg := lg.newReg()
-			buf.WriteString(fmt.Sprintf("  %s = zext i1 %s to i32\n", extReg, valReg))
-			buf.WriteString(fmt.Sprintf("  call i32 (i8*, ...) @printf(i8* %s, i32 %s)\n", formatPtr, extReg))
-		} else if valType == typechecker.NUMBER_TYPE {
-			formatLabel = lg.getOrStr("%g\n")
-			formatPtr := lg.newReg()
-			buf.WriteString(fmt.Sprintf("  %s = getelementptr { i64, i8*, [4 x i8] }, { i64, i8*, [4 x i8] }* %s, i64 0, i32 2, i64 0\n", formatPtr, formatLabel))
-			buf.WriteString(fmt.Sprintf("  call i32 (i8*, ...) @printf(i8* %s, double %s)\n", formatPtr, valReg))
-		} else {
-			// Fallback (e.g. pointer)
-			formatLabel = lg.getOrStr("%p\n")
-			formatPtr := lg.newReg()
-			buf.WriteString(fmt.Sprintf("  %s = getelementptr { i64, i8*, [4 x i8] }, { i64, i8*, [4 x i8] }* %s, i64 0, i32 2, i64 0\n", formatPtr, formatLabel))
-			buf.WriteString(fmt.Sprintf("  call i32 (i8*, ...) @printf(i8* %s, i8* %s)\n", formatPtr, valReg))
+		vals := n.Values
+		if len(vals) == 0 && n.Value != nil {
+			vals = []parser.Expression{n.Value}
 		}
+		for _, v := range vals {
+			valReg, valType := lg.genExpression(v, buf)
+			var formatLabel string
+			if valType == typechecker.STRING_TYPE {
+				formatLabel = lg.getOrStr("%s")
+				formatPtr := lg.newReg()
+				buf.WriteString(fmt.Sprintf("  %s = getelementptr { i64, i8*, [3 x i8] }, { i64, i8*, [3 x i8] }* %s, i64 0, i32 2, i64 0\n", formatPtr, formatLabel))
+				buf.WriteString(fmt.Sprintf("  call i32 (i8*, ...) @printf(i8* %s, i8* %s)\n", formatPtr, valReg))
+			} else if valType == typechecker.INT_TYPE {
+				formatLabel = lg.getOrStr("%lld")
+				formatPtr := lg.newReg()
+				buf.WriteString(fmt.Sprintf("  %s = getelementptr { i64, i8*, [5 x i8] }, { i64, i8*, [5 x i8] }* %s, i64 0, i32 2, i64 0\n", formatPtr, formatLabel))
+				buf.WriteString(fmt.Sprintf("  call i32 (i8*, ...) @printf(i8* %s, i64 %s)\n", formatPtr, valReg))
+			} else if valType == typechecker.BOOL_TYPE {
+				formatLabel = lg.getOrStr("%d")
+				formatPtr := lg.newReg()
+				buf.WriteString(fmt.Sprintf("  %s = getelementptr { i64, i8*, [3 x i8] }, { i64, i8*, [3 x i8] }* %s, i64 0, i32 2, i64 0\n", formatPtr, formatLabel))
+				extReg := lg.newReg()
+				buf.WriteString(fmt.Sprintf("  %s = zext i1 %s to i32\n", extReg, valReg))
+				buf.WriteString(fmt.Sprintf("  call i32 (i8*, ...) @printf(i8* %s, i32 %s)\n", formatPtr, extReg))
+			} else if valType == typechecker.NUMBER_TYPE {
+				formatLabel = lg.getOrStr("%g")
+				formatPtr := lg.newReg()
+				buf.WriteString(fmt.Sprintf("  %s = getelementptr { i64, i8*, [3 x i8] }, { i64, i8*, [3 x i8] }* %s, i64 0, i32 2, i64 0\n", formatPtr, formatLabel))
+				buf.WriteString(fmt.Sprintf("  call i32 (i8*, ...) @printf(i8* %s, double %s)\n", formatPtr, valReg))
+			} else {
+				formatLabel = lg.getOrStr("%p")
+				formatPtr := lg.newReg()
+				buf.WriteString(fmt.Sprintf("  %s = getelementptr { i64, i8*, [3 x i8] }, { i64, i8*, [3 x i8] }* %s, i64 0, i32 2, i64 0\n", formatPtr, formatLabel))
+				buf.WriteString(fmt.Sprintf("  call i32 (i8*, ...) @printf(i8* %s, i8* %s)\n", formatPtr, valReg))
+			}
+		}
+		nlLabel := lg.getOrStr("\n")
+		nlPtr := lg.newReg()
+		buf.WriteString(fmt.Sprintf("  %s = getelementptr { i64, i8*, [2 x i8] }, { i64, i8*, [2 x i8] }* %s, i64 0, i32 2, i64 0\n", nlPtr, nlLabel))
+		buf.WriteString(fmt.Sprintf("  call i32 (i8*, ...) @printf(i8* %s)\n", nlPtr))
 
 	case *parser.IfStatement:
 		condReg, _ := lg.genExpression(n.Condition, buf)
@@ -1064,6 +1074,14 @@ func (lg *LlvmGenerator) genExpression(node parser.Expression, buf *strings.Buil
 		case "түбір":
 			resReg := lg.newReg()
 			buf.WriteString(fmt.Sprintf("  %s = call double @builtin_sqrt(double %s)\n", resReg, argRegs[0]))
+			return resReg, typechecker.NUMBER_TYPE
+		case "синус":
+			resReg := lg.newReg()
+			buf.WriteString(fmt.Sprintf("  %s = call double @builtin_sin(double %s)\n", resReg, argRegs[0]))
+			return resReg, typechecker.NUMBER_TYPE
+		case "косинус":
+			resReg := lg.newReg()
+			buf.WriteString(fmt.Sprintf("  %s = call double @builtin_cos(double %s)\n", resReg, argRegs[0]))
 			return resReg, typechecker.NUMBER_TYPE
 		case "пи":
 			resReg := lg.newReg()

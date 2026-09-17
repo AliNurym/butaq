@@ -1,6 +1,7 @@
 package typechecker
 
 import (
+	"butaq/locales"
 	"butaq/parser"
 	"fmt"
 	"strings"
@@ -22,6 +23,7 @@ const (
 	STRUCT_TYPE Type = "ҚҰРЫЛЫМ"
 	VOID_TYPE   Type = "БОС"
 	UNKNOWN     Type = "БЕЛГІСІЗ"
+	ANY_TYPE    Type = "КЕЗ_КЕЛГЕН"
 	JSON_TYPE   Type = "ЖСОН"
 	RESULT_TYPE Type = "НӘТИЖЕ"
 )
@@ -196,7 +198,7 @@ func New() *TypeChecker {
 	}
 	tc.funcs["сан"] = &FuncSig{
 		Params:     []string{"мәтін"},
-		ParamTypes: []Type{STRING_TYPE},
+		ParamTypes: []Type{ANY_TYPE},
 		ReturnType: NUMBER_TYPE,
 	}
 	tc.funcs["уақыт"] = &FuncSig{
@@ -218,6 +220,11 @@ func New() *TypeChecker {
 		Params:     []string{"команда"},
 		ParamTypes: []Type{STRING_TYPE},
 		ReturnType: STRING_TYPE,
+	}
+	tc.funcs["жаңа_тізім"] = &FuncSig{
+		Params:     []string{"өлшем", "мән"},
+		ParamTypes: []Type{NUMBER_TYPE, ANY_TYPE},
+		ReturnType: ARRAY_TYPE,
 	}
 
 	// JSON functions
@@ -913,7 +920,15 @@ func (tc *TypeChecker) Check(node parser.Node, env *TypeEnv) Type {
 
 	// --- Print ---
 	case *parser.PrintStatement:
-		tc.Check(node.Value, env)
+		if len(node.Values) > 0 {
+			for _, v := range node.Values {
+				tc.Check(v, env)
+			}
+			return VOID_TYPE
+		}
+		if node.Value != nil {
+			tc.Check(node.Value, env)
+		}
 		return VOID_TYPE
 
 	// --- Return ---
@@ -982,6 +997,10 @@ func (tc *TypeChecker) Check(node parser.Node, env *TypeEnv) Type {
 				}
 			}
 		}
+		canonName := locales.CanonicalizeBuiltin(node.Function)
+		if canonName != node.Function {
+			node.Function = canonName
+		}
 		sig, ok := tc.funcs[node.Function]
 		if !ok {
 			// Check if it is a struct name (constructor)
@@ -1032,7 +1051,9 @@ func (tc *TypeChecker) Check(node parser.Node, env *TypeEnv) Type {
 			argType := tc.Check(arg, env)
 			if i < len(sig.ParamTypes) {
 				expectedType := sig.ParamTypes[i]
-				if expectedType == UNKNOWN || expectedType == "" {
+				if expectedType == ANY_TYPE {
+					// Allowed for any type without mutating signature
+				} else if expectedType == UNKNOWN || expectedType == "" {
 					sig.ParamTypes[i] = argType
 				} else if expectedType != argType && argType != UNKNOWN {
 					if strings.HasPrefix(string(expectedType), "ИНТЕРФЕЙС_") && strings.HasPrefix(string(argType), "ҚҰРЫЛЫМ_") && tc.satisfiesInterface(argType, expectedType) {

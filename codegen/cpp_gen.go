@@ -225,6 +225,7 @@ func (cg *CppGenerator) Generate(program *parser.Program) string {
 		cg.textSec.WriteString("    extern ftell\n")
 		cg.textSec.WriteString("    extern fflush\n")
 		cg.textSec.WriteString("    extern scanf\n")
+		cg.textSec.WriteString("    extern atof\n")
 		cg.textSec.WriteString("    extern rand\n")
 		cg.textSec.WriteString("    extern SetConsoleOutputCP\n")
 		cg.textSec.WriteString("    extern _runtime_clock\n")
@@ -1031,10 +1032,19 @@ func (cg *CppGenerator) genExpressionCoerced(expr parser.Expression, expectedTyp
 
 func (cg *CppGenerator) genPrint(n *parser.PrintStatement, sec *strings.Builder) {
 	sec.WriteString("    ; жазу\n")
+	if len(n.Values) > 0 {
+		for _, v := range n.Values {
+			cg.genPrintExpr(v, sec)
+		}
+	} else if n.Value != nil {
+		cg.genPrintExpr(n.Value, sec)
+	}
+}
 
-	exprType := cg.tc.Check(n.Value, cg.env)
+func (cg *CppGenerator) genPrintExpr(expr parser.Expression, sec *strings.Builder) {
+	exprType := cg.tc.Check(expr, cg.env)
 	if exprType == typechecker.BOOL_TYPE {
-		cg.genExpression(n.Value, sec)
+		cg.genExpression(expr, sec)
 		cg.genPrintBool(sec)
 		if cg.platform == PlatformWindows {
 			sec.WriteString("    xor rcx, rcx\n")
@@ -1045,9 +1055,9 @@ func (cg *CppGenerator) genPrint(n *parser.PrintStatement, sec *strings.Builder)
 		return
 	}
 
-	if cg.isStringExpr(n.Value) {
+	if cg.isStringExpr(expr) {
 		// ---- Print a string-returning expression (rax = char*) ----
-		cg.genExpression(n.Value, sec)
+		cg.genExpression(expr, sec)
 		if cg.platform == PlatformLinux {
 			sec.WriteString("    mov rdi, fmt_str\n")
 			sec.WriteString("    mov rsi, rax\n")
@@ -1069,7 +1079,7 @@ func (cg *CppGenerator) genPrint(n *parser.PrintStatement, sec *strings.Builder)
 		return
 	}
 
-	switch val := n.Value.(type) {
+	switch val := expr.(type) {
 	case *parser.NumberLiteral:
 		floatLabel := cg.newFloat(val.Value)
 		if cg.platform == PlatformLinux {
@@ -1155,7 +1165,7 @@ func (cg *CppGenerator) genPrint(n *parser.PrintStatement, sec *strings.Builder)
 
 	default:
 		// General expression — eval into xmm0/rax and print as number
-		cg.genExpression(n.Value, sec)
+		cg.genExpression(expr, sec)
 		if cg.platform == PlatformLinux {
 			sec.WriteString("    mov rdi, fmt_float\n")
 			sec.WriteString("    mov rax, 1\n")
@@ -2443,6 +2453,106 @@ func (cg *CppGenerator) genCallExpr(n *parser.CallExpression, sec *strings.Build
 		}
 		sec.WriteString("    cvtsi2sd xmm0, rax\n")
 		return
+
+	case "сан":
+		sec.WriteString("    ; сан\n")
+		cg.genExpression(n.Arguments[0], sec)
+		argType := cg.tc.Check(n.Arguments[0], cg.env)
+		if argType == typechecker.STRING_TYPE || cg.isStringExpr(n.Arguments[0]) {
+			if cg.platform == PlatformWindows {
+				sec.WriteString("    mov rcx, rax\n")
+				sec.WriteString("    sub rsp, 32\n")
+				sec.WriteString("    call atof\n")
+				sec.WriteString("    add rsp, 32\n")
+			} else {
+				sec.WriteString("    mov rdi, rax\n")
+				sec.WriteString("    call atof\n")
+			}
+		}
+		return
+
+	case "мәтін":
+		sec.WriteString("    ; мәтін\n")
+		cg.genExpression(n.Arguments[0], sec)
+		if cg.platform == PlatformWindows {
+			sec.WriteString("    movsd xmm2, xmm0\n")
+			sec.WriteString("    movq r8, xmm2\n")
+			sec.WriteString("    lea rdx, [fmt_numstr]\n")
+			sec.WriteString("    lea rcx, [numstr_buf]\n")
+			sec.WriteString("    sub rsp, 32\n")
+			sec.WriteString("    call sprintf\n")
+			sec.WriteString("    add rsp, 32\n")
+		} else {
+			sec.WriteString("    lea rdi, [numstr_buf]\n")
+			sec.WriteString("    lea rsi, [fmt_numstr]\n")
+			sec.WriteString("    mov rax, 1\n")
+			sec.WriteString("    call sprintf\n")
+		}
+		sec.WriteString("    lea rax, [numstr_buf]\n")
+		return
+
+	case "жаңа_тізім":
+		sec.WriteString("    ; жаңа_тізім\n")
+		cg.genExpression(n.Arguments[0], sec)
+		sec.WriteString("    cvttsd2si r13, xmm0\n")
+		lblValidSize := cg.newLabel("valid_size")
+		sec.WriteString("    cmp r13, 0\n")
+		sec.WriteString(fmt.Sprintf("    jge %s\n", lblValidSize))
+		sec.WriteString("    xor r13, r13\n")
+		sec.WriteString(fmt.Sprintf("%s:\n", lblValidSize))
+		sec.WriteString("    lea rcx, [r13*8 + 8]\n")
+		if cg.platform == PlatformWindows {
+			sec.WriteString("    push r13\n")
+			sec.WriteString("    sub rsp, 32\n")
+			sec.WriteString("    call malloc\n")
+			sec.WriteString("    add rsp, 32\n")
+			sec.WriteString("    pop r13\n")
+		} else {
+			sec.WriteString("    mov rdi, rcx\n")
+			sec.WriteString("    push r13\n")
+			sec.WriteString("    call malloc\n")
+			sec.WriteString("    pop r13\n")
+		}
+		sec.WriteString("    mov r12, rax\n")
+		sec.WriteString("    mov [r12], r13\n")
+
+		if len(n.Arguments) >= 2 {
+			sec.WriteString("    push r12\n")
+			sec.WriteString("    push r13\n")
+			cg.genExpression(n.Arguments[1], sec)
+			valType := cg.tc.Check(n.Arguments[1], cg.env)
+			sec.WriteString("    pop r13\n")
+			sec.WriteString("    pop r12\n")
+
+			lblLoop := cg.newLabel("fill_loop")
+			lblDone := cg.newLabel("fill_done")
+			sec.WriteString("    xor r14, r14\n")
+			sec.WriteString(fmt.Sprintf("%s:\n", lblLoop))
+			sec.WriteString("    cmp r14, r13\n")
+			sec.WriteString(fmt.Sprintf("    jge %s\n", lblDone))
+			if valType == typechecker.STRING_TYPE || valType == typechecker.ARRAY_TYPE || valType == typechecker.JSON_TYPE || strings.HasPrefix(string(valType), "ҚҰРЫЛЫМ_") {
+				sec.WriteString("    mov [r12 + 8 + r14*8], rax\n")
+			} else {
+				sec.WriteString("    movsd [r12 + 8 + r14*8], xmm0\n")
+			}
+			sec.WriteString("    inc r14\n")
+			sec.WriteString(fmt.Sprintf("    jmp %s\n", lblLoop))
+			sec.WriteString(fmt.Sprintf("%s:\n", lblDone))
+		} else {
+			lblLoop := cg.newLabel("zero_loop")
+			lblDone := cg.newLabel("zero_done")
+			sec.WriteString("    xor r14, r14\n")
+			sec.WriteString(fmt.Sprintf("%s:\n", lblLoop))
+			sec.WriteString("    cmp r14, r13\n")
+			sec.WriteString(fmt.Sprintf("    jge %s\n", lblDone))
+			sec.WriteString("    mov qword [r12 + 8 + r14*8], 0\n")
+			sec.WriteString("    inc r14\n")
+			sec.WriteString(fmt.Sprintf("    jmp %s\n", lblLoop))
+			sec.WriteString(fmt.Sprintf("%s:\n", lblDone))
+		}
+		sec.WriteString("    mov rax, r12\n")
+		sec.WriteString("    movq xmm0, rax\n")
+		return
 	}
 
 	// Check if it is a struct constructor
@@ -2658,6 +2768,9 @@ func (cg *CppGenerator) genCallExpr(n *parser.CallExpression, sec *strings.Build
 				if reg1 != "rax" {
 					sec.WriteString(fmt.Sprintf("    mov %s, rax\n", reg1))
 				}
+				if cg.platform == PlatformWindows && reg2 != "" {
+					sec.WriteString(fmt.Sprintf("    movq %s, rax\n", reg2))
+				}
 			} else {
 				if reg1 != "xmm0" {
 					sec.WriteString(fmt.Sprintf("    movsd %s, xmm0\n", reg1))
@@ -2676,6 +2789,9 @@ func (cg *CppGenerator) genCallExpr(n *parser.CallExpression, sec *strings.Build
 			reg1, reg2 := getTargetReg(i, argIsStr[i])
 			if argIsStr[i] {
 				cg.genSimpleExpression(n.Arguments[i], reg1, sec)
+				if cg.platform == PlatformWindows && reg2 != "" {
+					sec.WriteString(fmt.Sprintf("    movq %s, %s\n", reg2, reg1))
+				}
 			} else {
 				cg.genSimpleExpression(n.Arguments[i], reg1, sec)
 				if reg2 != "" {
@@ -2709,6 +2825,7 @@ func (cg *CppGenerator) genCallExpr(n *parser.CallExpression, sec *strings.Build
 				} else {
 					if i < len(winArgRegs) {
 						sec.WriteString(fmt.Sprintf("    mov %s, rax\n", winArgRegs[i]))
+						sec.WriteString(fmt.Sprintf("    movq %s, rax\n", winFloatRegs[i]))
 					}
 				}
 			} else {
@@ -2775,6 +2892,111 @@ func (cg *CppGenerator) genFunctionDef(fs *parser.FunctionStatement) {
 	funcs := cg.tc.GetFuncs()
 	sig := funcs[fs.Name]
 
+	isParamArrayOrString := func(pName string) bool {
+		found := false
+		var scanStmt func(s parser.Statement)
+		var scanExpr func(e parser.Expression)
+		scanExpr = func(e parser.Expression) {
+			if e == nil || found {
+				return
+			}
+			switch ex := e.(type) {
+			case *parser.IndexExpression:
+				if ex == nil {
+					return
+				}
+				if id, ok := ex.Left.(*parser.Identifier); ok && id != nil && id.Value == pName {
+					found = true
+					return
+				}
+				scanExpr(ex.Left)
+				scanExpr(ex.Index)
+			case *parser.LengthExpression:
+				if ex == nil {
+					return
+				}
+				if id, ok := ex.Value.(*parser.Identifier); ok && id != nil && id.Value == pName {
+					found = true
+					return
+				}
+				scanExpr(ex.Value)
+			case *parser.PostfixExpression:
+				if ex != nil {
+					scanExpr(ex.Left)
+					scanExpr(ex.Right)
+				}
+			case *parser.CallExpression:
+				if ex != nil {
+					for _, a := range ex.Arguments {
+						scanExpr(a)
+					}
+				}
+			case *parser.UnaryExpression:
+				if ex != nil {
+					scanExpr(ex.Right)
+				}
+			}
+		}
+		scanStmt = func(s parser.Statement) {
+			if s == nil || found {
+				return
+			}
+			switch st := s.(type) {
+			case *parser.IndexAssignStatement:
+				if st == nil {
+					return
+				}
+				if st.Array != nil && st.Array.Value == pName {
+					found = true
+					return
+				}
+				scanExpr(st.Index)
+				scanExpr(st.Value)
+			case *parser.BlockStatement:
+				if st == nil {
+					return
+				}
+				for _, stmt := range st.Statements {
+					scanStmt(stmt)
+				}
+			case *parser.VarAssignStatement:
+				if st != nil {
+					scanExpr(st.Value)
+				}
+			case *parser.IfStatement:
+				if st != nil {
+					scanExpr(st.Condition)
+					scanStmt(st.Consequence)
+					scanStmt(st.Alternative)
+				}
+			case *parser.WhileStatement:
+				if st != nil {
+					scanExpr(st.Condition)
+					scanStmt(st.Body)
+				}
+			case *parser.ReturnStatement:
+				if st != nil {
+					scanExpr(st.Value)
+				}
+			case *parser.PrintStatement:
+				if st != nil {
+					scanExpr(st.Value)
+					for _, v := range st.Values {
+						scanExpr(v)
+					}
+				}
+			case *parser.ExpressionStatement:
+				if st != nil {
+					scanExpr(st.Expression)
+				}
+			}
+		}
+		for _, stmt := range fs.Body.Statements {
+			scanStmt(stmt)
+		}
+		return found
+	}
+
 	// Map parameters to stack
 	for i, param := range fs.Parameters {
 		off := cg.allocVar(param)
@@ -2783,6 +3005,12 @@ func (cg *CppGenerator) genFunctionDef(fs *parser.FunctionStatement) {
 		if sig != nil && i < len(sig.ParamTypes) {
 			pt = sig.ParamTypes[i]
 			isStr = pt == typechecker.STRING_TYPE || pt == typechecker.ARRAY_TYPE || strings.HasPrefix(string(pt), "ҚҰРЫЛЫМ_")
+		}
+		if isParamArrayOrString(param) {
+			isStr = true
+			if pt == typechecker.UNKNOWN {
+				pt = typechecker.ARRAY_TYPE
+			}
 		}
 		cg.varIsString[param] = isStr
 		cg.env.Set(param, pt)
@@ -2796,8 +3024,10 @@ func (cg *CppGenerator) genFunctionDef(fs *parser.FunctionStatement) {
 			}
 		} else {
 			// Numeric arg: lives in xmm register
-			if i < len(linuxFloatRegs) {
+			if cg.platform == PlatformLinux && i < len(linuxFloatRegs) {
 				sec.WriteString(fmt.Sprintf("    movsd [rbp%+d], %s  ; param num %s\n", off, linuxFloatRegs[i], param))
+			} else if cg.platform == PlatformWindows && i < len(winFloatRegs) {
+				sec.WriteString(fmt.Sprintf("    movsd [rbp%+d], %s  ; param num %s\n", off, winFloatRegs[i], param))
 			}
 		}
 	}

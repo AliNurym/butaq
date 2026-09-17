@@ -1,0 +1,73 @@
+# ==============================================================================
+# Butaq 3D Donut — Edizione Italiana per il Congresso Fibonacci (Roma)
+# Animazione 3D ASCII Raymarching & Z-buffering in puro linguaggio Butaq
+# Per una rotazione infinita sostituire la condizione con 'mentre vero'
+# ==============================================================================
+
+sia A = 0.0
+sia B = 0.0
+
+# Pulizia dello schermo (ANSI escape)
+stampa("\x1b[2J")
+
+sia numero_fotogrammi = 0
+mentre numero_fotogrammi < 100
+    sia b = nuovo_array(880, " ")
+    sia z = nuovo_array(880, 0.0)
+
+    sia sin_A = seno(A)
+    sia cos_A = coseno(A)
+    sia sin_B = seno(B)
+    sia cos_B = coseno(B)
+
+    # Calcolo dei punti sulla superficie del toro
+    sia j = 0.0
+    mentre j < 6.28
+        sia sin_j = seno(j)
+        sia cos_j = coseno(j)
+        
+        sia i = 0.0
+        mentre i < 6.28
+            sia sin_i = seno(i)
+            sia cos_i = coseno(i)
+            
+            sia h = cos_j + 2.0
+            sia D = 1.0 / (sin_i * h * sin_A + sin_j * cos_A + 5.0)
+            sia t = sin_i * h * cos_A - sin_j * sin_A
+            
+            # Coordinate proiettate sullo schermo (x: 0..39, y: 0..21)
+            sia x = intero(20.0 + 18.0 * D * (cos_i * h * cos_B - t * sin_B))
+            sia y = intero(11.0 + 9.0 * D * (cos_i * h * sin_B + t * cos_B))
+            
+            # Prodotto scalare della normale con la luce (Luminanza)
+            sia N = intero(8.0 * ((sin_j * sin_A - sin_i * cos_j * cos_A) * cos_B - sin_i * cos_j * sin_A - sin_j * cos_A - cos_i * cos_j * sin_B))
+            
+            se y >= 0 e y < 22 e x >= 0 e x < 40
+                sia idx = y * 40 + x
+                se D > z[idx]
+                    z[idx] = D
+                    se N > 0 e N < 12
+                        b[idx] = ".,-~:;=!*#$@"[N]
+                    altrimenti
+                        b[idx] = "."
+            
+            i = i + 0.08
+        j = j + 0.04
+
+    # Assemblaggio del frame e ritorno del cursore
+    sia fotogramma = "\x1b[H"
+    sia riga_y = 0
+    mentre riga_y < 22
+        sia riga = ""
+        sia colonna_x = 0
+        mentre colonna_x < 40
+            riga = riga + b[riga_y * 40 + colonna_x]
+            colonna_x = colonna_x + 1
+        fotogramma = fotogramma + riga + "\n"
+        riga_y = riga_y + 1
+
+    stampa(fotogramma)
+    A = A + 0.08
+    B = B + 0.04
+    numero_fotogrammi = numero_fotogrammi + 1
+    dormi(0.03)

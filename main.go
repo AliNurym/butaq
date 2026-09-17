@@ -2,8 +2,11 @@ package main
 
 import (
 	"butaq/codegen"
+	"butaq/interpreter"
 	"butaq/lexer"
+	"butaq/locales"
 	"butaq/parser"
+	"butaq/transpiler"
 	"butaq/typechecker"
 	"flag"
 	"fmt"
@@ -12,24 +15,236 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
+	"unsafe"
 )
 
-func main() {
-	if len(os.Args) > 1 {
-		switch os.Args[1] {
-		case "bap":
-			handleBap(os.Args[2:])
-			return
-		case "fmt":
-			handleFmt(os.Args[2:])
-			return
-		case "lsp":
-			handleLsp(os.Args[2:])
-			return
+// enableWindowsANSI enables VT100/ANSI escape codes in Windows console.
+// Required for animations, colors, and cursor movement (\x1b[H, \x1b[2J, etc.)
+func enableWindowsANSI() {
+	if runtime.GOOS != "windows" {
+		return
+	}
+	kernel32 := syscall.NewLazyDLL("kernel32.dll")
+	getConsoleMode := kernel32.NewProc("GetConsoleMode")
+	setConsoleMode := kernel32.NewProc("SetConsoleMode")
+	handle, err := syscall.GetStdHandle(syscall.STD_OUTPUT_HANDLE)
+	if err != nil {
+		return
+	}
+	var mode uint32
+	getConsoleMode.Call(uintptr(handle), uintptr(unsafe.Pointer(&mode)))
+	// ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+	setConsoleMode.Call(uintptr(handle), uintptr(mode|0x0004))
+}
+
+// initToolchainPath auto-discovers MinGW/LLVM/NASM compiler toolchains on Windows.
+func initToolchainPath() {
+	extraPaths := []string{
+		"C:\\Users\\megumin\\AppData\\Local\\Microsoft\\WinGet\\Packages\\BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe\\mingw64\\bin",
+		"C:\\Program Files\\LLVM\\bin",
+		"C:\\Program Files\\NASM",
+		"C:\\MinGW\\bin",
+	}
+	currentPath := os.Getenv("PATH")
+	for _, p := range extraPaths {
+		if _, err := os.Stat(p); err == nil && !strings.Contains(currentPath, p) {
+			currentPath = p + ";" + currentPath
 		}
 	}
+	os.Setenv("PATH", currentPath)
+}
 
-	// CLI Flags
+func main() {
+	initToolchainPath()
+	enableWindowsANSI()
+	if len(os.Args) < 2 {
+		printGeneralUsage()
+		return
+	}
+
+	command := os.Args[1]
+
+	switch command {
+	case "build":
+		handleBuild(os.Args[2:])
+	case "run":
+		handleRun(os.Args[2:])
+	case "transpile":
+		handleTranspile(os.Args[2:])
+	case "locales":
+		handleLocales(os.Args[2:])
+	case "fmt":
+		handleFmt(os.Args[2:])
+	case "lsp":
+		handleLsp(os.Args[2:])
+	case "bap":
+		handleBap(os.Args[2:])
+	case "-h", "--help", "help":
+		printGeneralUsage()
+	default:
+		// Backward compatibility: if first arg is a file or flag (e.g. -r, -v, or file.btq)
+		handleBuild(os.Args[1:])
+	}
+}
+
+func printGeneralUsage() {
+	fmt.Println("═══════════════════════════════════════════════════════════════════════")
+	fmt.Println("           Butaq — Zero-Cost Localized System-Level Compiler")
+	fmt.Println("       Модульный полиглот-компилятор с нулевой стоимостью локализации")
+	fmt.Println("═══════════════════════════════════════════════════════════════════════")
+	fmt.Println("Қолдану / Usage: butaq <команда / command> [параметрлер] <файл.btq>")
+	fmt.Println()
+	fmt.Println("Командалар / Commands:")
+	fmt.Println("  build       Компиляция в нативный бинарник (LLVM / NASM)")
+	fmt.Println("  run         Компиляция и немедленный запуск программы")
+	fmt.Println("  transpile   Транспиляция AST между языками (KZ, EN, IT, RU)")
+	fmt.Println("  locales     Список поддерживаемых языковых локалей")
+	fmt.Println("  fmt         Форматирование исходного кода (.btq)")
+	fmt.Println("  lsp         Language Server Protocol для VS Code / Neovim")
+	fmt.Println("  bap         Пакетный менеджер Butaq")
+	fmt.Println()
+	fmt.Println("Мысалдар / Examples:")
+	fmt.Println("  butaq build examples/fib_kk.btq")
+	fmt.Println("  butaq run examples/fib_en.btq")
+	fmt.Println("  butaq transpile examples/fib_kk.btq --target=it -o examples/fib_it.btq")
+	fmt.Println("  butaq transpile examples/fib_en.btq --target=ru")
+	fmt.Println("  butaq locales")
+	fmt.Println()
+}
+
+func handleLocales(args []string) {
+	fmt.Println("═══════════════════════════════════════════════════════════════════════")
+	fmt.Println("               Butaq — Қолдау көрсетілетін локальдер / Locales")
+	fmt.Println("═══════════════════════════════════════════════════════════════════════")
+	available := locales.Available()
+	for _, loc := range available {
+		fmt.Printf("  • [%-2s] %-12s — %d сөздік кілт сөздері, %d кірістірілген атаулар\n",
+			loc.Code, loc.Name, len(loc.Keywords), len(loc.Builtins))
+	}
+	fmt.Println()
+	fmt.Println("💡 Жаңа тілді қосу үшін locales/<код>.json файлын қосыңыз (қайта жинақтау қажетсіз!).")
+	fmt.Println()
+}
+
+func reorderFlags(args []string) []string {
+	var flags []string
+	var nonFlags []string
+	skipNext := false
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if skipNext {
+			flags = append(flags, arg)
+			skipNext = false
+			continue
+		}
+		if strings.HasPrefix(arg, "-") {
+			flags = append(flags, arg)
+			if !strings.Contains(arg, "=") && (arg == "-o" || arg == "--target" || arg == "-target" || arg == "--to" || arg == "-to" || arg == "--locale" || arg == "-locale" || arg == "--platform" || arg == "-platform" || arg == "--asm" || arg == "-asm") {
+				skipNext = true
+			}
+		} else {
+			nonFlags = append(nonFlags, arg)
+		}
+	}
+	return append(flags, nonFlags...)
+}
+
+func handleTranspile(args []string) {
+	args = reorderFlags(args)
+	fs := flag.NewFlagSet("transpile", flag.ExitOnError)
+	var (
+		targetFlag string
+		toFlag     string
+		outputFlag string
+		localeFlag string
+		stdoutFlag bool
+	)
+	fs.StringVar(&targetFlag, "target", "en", "Мақсатты тіл / Target human language (en, kk, it, ru)")
+	fs.StringVar(&toFlag, "to", "", "Мақсатты тіл (--target баламасы)")
+	fs.StringVar(&outputFlag, "o", "", "Шығыс файл / Output file")
+	fs.StringVar(&localeFlag, "locale", "", "Бастапқы тіл / Source locale (авто-анықтауды ауыстыру)")
+	fs.BoolVar(&stdoutFlag, "stdout", false, "Тікелей терминалға шығару")
+
+	fs.Parse(args)
+
+	if fs.NArg() < 1 {
+		fmt.Println("Қолдану: butaq transpile [жалаушалар] <файл.btq>")
+		fs.PrintDefaults()
+		return
+	}
+
+	inputFile := fs.Arg(0)
+	sourceCode, err := os.ReadFile(inputFile)
+	if err != nil {
+		fmt.Printf("❌ Қате: файлды оқу мүмкін болмады: %v\n", err)
+		os.Exit(1)
+	}
+
+	// 1. Resolve source locale
+	var srcLoc *locales.Locale
+	if localeFlag != "" {
+		if loc, ok := locales.Get(localeFlag); ok {
+			srcLoc = loc
+		} else {
+			fmt.Printf("⚠️ Белгісіз бастапқы локаль '%s', авто-анықтау қолданылады.\n", localeFlag)
+		}
+	}
+	if srcLoc == nil {
+		srcLoc = locales.AutoDetect(string(sourceCode))
+	}
+
+	// 2. Resolve target locale
+	targetCode := targetFlag
+	if toFlag != "" {
+		targetCode = toFlag
+	}
+	targetLoc, ok := locales.Get(targetCode)
+	if !ok {
+		fmt.Printf("❌ Қате: белгісіз мақсатты локаль '%s'. Қолжетімді: kk, en, it, ru\n", targetCode)
+		os.Exit(1)
+	}
+
+	// 3. Parse AST
+	l := lexer.NewWithLocale(string(sourceCode), srcLoc)
+	p := parser.New(l)
+	prog := p.ParseProgram()
+
+	if len(p.ErrorsStructured()) > 0 {
+		fmt.Println("❌ Синтаксистік қателер:")
+		for _, e := range p.ErrorsStructured() {
+			renderError(inputFile, string(sourceCode), e.Line, e.Col, e.Message, "Синтаксис")
+		}
+		os.Exit(1)
+	}
+
+	// 4. Transpile
+	tr := transpiler.New(targetLoc)
+	transpiled := tr.Transpile(prog)
+
+	// 5. Output
+	if outputFlag != "" {
+		if err := os.WriteFile(outputFlag, []byte(transpiled), 0644); err != nil {
+			fmt.Printf("❌ Қате: шығыс файлын жазу мүмкін болмады: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("✨ Транспиляция сәтті аяқталды [%s → %s]: %s\n", srcLoc.Code, targetLoc.Code, outputFlag)
+	} else {
+		fmt.Print(transpiled)
+	}
+}
+
+func handleRun(args []string) {
+	// Prepend -r to args and run build
+	buildArgs := append([]string{"-r"}, args...)
+	handleBuild(buildArgs)
+}
+
+func handleBuild(args []string) {
+	args = reorderFlags(args)
+	fs := flag.NewFlagSet("build", flag.ExitOnError)
+
 	var (
 		helpFlag     bool
 		runFlag      bool
@@ -38,48 +253,39 @@ func main() {
 		asmFileFlag  string
 		verboseFlag  bool
 		llvmFlag     bool
+		nasmFlag     bool
+		interpFlag   bool
+		localeFlag   string
 	)
 
-	flag.BoolVar(&helpFlag, "h", false, "Көмек көрсету")
-	flag.BoolVar(&helpFlag, "help", false, "Көмек көрсету")
-	flag.BoolVar(&runFlag, "r", false, "Бағдарламаны компиляциядан кейін бірден іске қосу")
-	flag.BoolVar(&runFlag, "run", false, "Бағдарламаны компиляциядан кейін бірден іске қосу")
-	flag.StringVar(&outputFlag, "o", "", "Шығыс екілік (binary) файлдың атауы")
-	flag.StringVar(&platformFlag, "platform", "", "Мақсатты платформа (windows немесе linux)")
-	flag.StringVar(&asmFileFlag, "asm", "", "Генерацияланатын ассемблер немесе LLVM файлының атауы")
-	flag.BoolVar(&verboseFlag, "v", false, "Толық компиляция журналдарын көрсету")
-	flag.BoolVar(&verboseFlag, "verbose", false, "Толық компиляция журналдарын көрсету")
-	flag.BoolVar(&llvmFlag, "llvm", false, "LLVM IR генерациясын және clang компиляциясын қолдану")
+	fs.BoolVar(&helpFlag, "h", false, "Көмек көрсету")
+	fs.BoolVar(&helpFlag, "help", false, "Көмек көрсету")
+	fs.BoolVar(&runFlag, "r", false, "Бағдарламаны компиляциядан кейін бірден іске қосу")
+	fs.BoolVar(&runFlag, "run", false, "Бағдарламаны компиляциядан кейін бірден іске қосу")
+	fs.BoolVar(&interpFlag, "i", false, "AST-интерпретатор режимінде орындау")
+	fs.BoolVar(&interpFlag, "interp", false, "AST-интерпретатор режимінде орындау")
+	fs.StringVar(&outputFlag, "o", "", "Шығыс екілік (binary) файлдың атауы")
+	fs.StringVar(&platformFlag, "platform", "", "Мақсатты платформа (windows немесе linux)")
+	fs.StringVar(&asmFileFlag, "asm", "", "Генерацияланатын ассемблер немесе LLVM файлының атауы")
+	fs.BoolVar(&verboseFlag, "v", false, "Толық компиляция журналдарын көрсету")
+	fs.BoolVar(&verboseFlag, "verbose", false, "Толық компиляция журналдарын көрсету")
+	fs.BoolVar(&llvmFlag, "llvm", false, "LLVM IR генерациясын және clang компиляциясын қолдану")
+	fs.BoolVar(&nasmFlag, "nasm", false, "NASM x86-64 backend қолдану")
+	fs.StringVar(&localeFlag, "locale", "", "Бастапқы синтаксис локалі (kk, en, it, ru)")
 
-	flag.Usage = func() {
+	fs.Parse(args)
+
+	if helpFlag || fs.NArg() < 1 {
 		fmt.Println("═══════════════════════════════════════════════════════════")
-		fmt.Println("             Butaq тілі — SOV Компиляторы (CLI)")
+		fmt.Println("             Butaq — Polyglot Compiler (CLI)")
 		fmt.Println("═══════════════════════════════════════════════════════════")
-		fmt.Println("Қолдану: butaq [жалаушалар] <файл.btq>")
+		fmt.Println("Қолдану: butaq build [жалаушалар] <файл.btq>")
 		fmt.Println()
-		fmt.Println("Жалаушалар:")
-		fmt.Println("  -h, --help        Осы анықтаманы көрсету")
-		fmt.Println("  -r, --run         Компиляциядан кейін бағдарламаны іске қосу")
-		fmt.Println("  -o <файл>         Шығыс файл атауы (әдепкі: кіріс файл аты)")
-		fmt.Println("  --platform <тип>  Платформаны таңдау (windows немесе linux)")
-		fmt.Println("  --asm <файл>      Кодты сақтайтын файл (әдепкі: out.asm немесе out.ll)")
-		fmt.Println("  --llvm            LLVM IR backend-ін пайдалану (әдепкі: NASM)")
-		fmt.Println("  -v, --verbose     Толық компиляция барысын шығару")
-		fmt.Println()
-		fmt.Println("Мысалдар:")
-		fmt.Println("  butaq examples/test_complex.btq")
-		fmt.Println("  butaq -r examples/test_loop.btq")
-		fmt.Println("  butaq --llvm -r examples/test_loop.btq")
+		fs.PrintDefaults()
+		return
 	}
 
-	flag.Parse()
-
-	if helpFlag || flag.NArg() < 1 {
-		flag.Usage()
-		os.Exit(0)
-	}
-
-	inputFile := flag.Arg(0)
+	inputFile := fs.Arg(0)
 	sourceCode, err := os.ReadFile(inputFile)
 	if err != nil {
 		fmt.Printf("❌ Қате: файлды оқу мүмкін болмады: %v\n", err)
@@ -90,8 +296,22 @@ func main() {
 		fmt.Printf("🔤 Оқылды: %s (%d байт)\n", inputFile, len(sourceCode))
 	}
 
+	// ── 0. Локальді анықтау ───────────────────────────────────────────────
+	var activeLocale *locales.Locale
+	if localeFlag != "" {
+		if loc, ok := locales.Get(localeFlag); ok {
+			activeLocale = loc
+		}
+	}
+	if activeLocale == nil {
+		activeLocale = locales.AutoDetect(string(sourceCode))
+	}
+	if verboseFlag {
+		fmt.Printf("🌐 Анықталған локаль: [%s] %s\n", activeLocale.Code, activeLocale.Name)
+	}
+
 	// ── 1. Лексер + Парсер ──────────────────────────────────────────────────
-	l := lexer.New(string(sourceCode))
+	l := lexer.NewWithLocale(string(sourceCode), activeLocale)
 	p := parser.New(l)
 	program := p.ParseProgram()
 
@@ -139,6 +359,14 @@ func main() {
 		}
 	}
 
+	// Default to high-performance NASM x86-64 native backend
+	useLlvm := false
+	if llvmFlag {
+		useLlvm = true
+	} else if nasmFlag {
+		useLlvm = false
+	}
+
 	// ── 3. Кодогенерация ──────────────────────────────
 	platform := codegen.PlatformLinux
 	if platformFlag != "" {
@@ -148,7 +376,6 @@ func main() {
 		case "linux":
 			platform = codegen.PlatformLinux
 		default:
-			fmt.Printf("⚠️ Белгісіз платформа '%s'. Ағымдағы ОЖ пайдаланылады.\n", platformFlag)
 			if runtime.GOOS == "windows" {
 				platform = codegen.PlatformWindows
 			}
@@ -161,7 +388,7 @@ func main() {
 
 	asmFile := asmFileFlag
 	if asmFile == "" {
-		if llvmFlag {
+		if useLlvm {
 			asmFile = "out.ll"
 		} else {
 			asmFile = "out.asm"
@@ -169,7 +396,7 @@ func main() {
 	}
 
 	var generatedCode string
-	if llvmFlag {
+	if useLlvm {
 		lg := codegen.NewLlvm(tcEnv, tc, platform)
 		generatedCode = lg.Generate(program)
 		if verboseFlag {
@@ -198,7 +425,6 @@ func main() {
 		}
 	}
 
-	// Find runtime.c relative to the compiler executable first, fallback to relative path
 	runtimeC := "runtime/runtime.c"
 	if exePath, err := os.Executable(); err == nil {
 		candidate := filepath.Join(filepath.Dir(exePath), "runtime", "runtime.c")
@@ -207,12 +433,43 @@ func main() {
 		}
 	}
 
-	if llvmFlag {
-		// ── 5. LLVM IR компиляциясы және линковкасы (Clang арқылы) ──────────────
+	hasCompiler := false
+	if useLlvm {
+		_, err := exec.LookPath("clang")
+		hasCompiler = (err == nil)
+	} else {
+		_, errNasm := exec.LookPath("nasm")
+		_, errGcc := exec.LookPath("gcc")
+		hasCompiler = (errNasm == nil && errGcc == nil)
+	}
+
+	// If interpFlag OR no C compiler/assembler found and running directly, fall back to pure AST Interpreter!
+	if (interpFlag || !hasCompiler) && runFlag {
+		if verboseFlag {
+			if interpFlag {
+				fmt.Println("ℹ️ AST-интерпретатор режимінде орындалуда...")
+			} else {
+				fmt.Println("ℹ️ Нативный компилятор не найден, запуск через встроенный AST-интерпретатор...")
+			}
+		}
+		ip := interpreter.New()
+		ip.StreamOutput = true // write directly to stdout for real-time animation
+		_, err := ip.Run(program)
+		if err != nil {
+			fmt.Printf("❌ Орындалу қатесі: %v\n", err)
+			os.Exit(1)
+		}
+		if asmFileFlag == "" {
+			os.Remove(asmFile)
+		}
+		return
+	}
+
+	if useLlvm {
+		// ── 5. LLVM IR компиляциясы (Clang) ──────────────
 		if verboseFlag {
 			fmt.Printf("🔧 Clang компиляциясы: %s + %s → %s\n", asmFile, runtimeC, outputBinary)
 		}
-		// Try clang
 		clangArgs := []string{"-O3", "-o", outputBinary, asmFile, runtimeC}
 		if platform == codegen.PlatformLinux {
 			clangArgs = append(clangArgs, "-lpthread", "-lm")
@@ -220,13 +477,19 @@ func main() {
 		clangCmd := exec.Command("clang", clangArgs...)
 		clangOut, err := clangCmd.CombinedOutput()
 		if err != nil {
-			// If clang fails or not found, try to compile or notice user
 			fmt.Println("⚠️ Clang компиляциясы сәтсіз аяқталды немесе 'clang' табылмады.")
 			fmt.Println("LLVM IR коды келесі файлға сақталды:", asmFile)
 			if verboseFlag {
 				fmt.Println(string(clangOut))
 			}
 			if runFlag {
+				// Fallback to interpreter
+				ip := interpreter.New()
+				out, err := ip.Run(program)
+				if err == nil {
+					fmt.Print(out)
+					return
+				}
 				os.Exit(1)
 			}
 		} else {
@@ -235,7 +498,7 @@ func main() {
 			}
 			os.Chmod(outputBinary, 0755)
 			if asmFileFlag == "" {
-				os.Remove("out.ll") // Delete default temporary LLVM IR file
+				os.Remove("out.ll")
 			}
 		}
 	} else {
@@ -271,10 +534,6 @@ func main() {
 		}
 
 		// ── 6. Линковка ─────────────────────────────────────────────────────────
-		if verboseFlag {
-			fmt.Printf("🔗 Линковка: %s → %s\n", filepath.Base(objFile), outputBinary)
-		}
-
 		var linkCmd *exec.Cmd
 		if platform == codegen.PlatformWindows {
 			linkCmd = exec.Command("gcc", "-O3", "-o", outputBinary, objFile, runtimeC, "-lkernel32", "-lmsvcrt")
@@ -290,36 +549,30 @@ func main() {
 		}
 
 		os.Chmod(outputBinary, 0755)
-
-		// Clean up intermediate object file
 		os.Remove(objFile)
 		if asmFileFlag == "" {
-			os.Remove("out.asm") // Delete default asm file
-		}
-
-		if verboseFlag {
-			fmt.Println("🧹 Аралық объектілік файлдар тазартылды")
+			os.Remove("out.asm")
 		}
 	}
 
 	if !runFlag {
 		fmt.Println()
-		fmt.Println("═══════════════════════════════════════════════════════════")
-		fmt.Printf("  ✅ Сәтті! Дербес бағдарлама жасалды: ./%s\n", outputBinary)
-		if llvmFlag {
-			fmt.Println("  (Таза машина коды — LLVM компиляциясы арқылы!)")
+		fmt.Println("═══════════════════════════════════════════════════════════════════════")
+		fmt.Printf("  ✅ Сәтті! Дербес машиналық бағдарлама жасалды: ./%s\n", outputBinary)
+		if useLlvm {
+			fmt.Println("  (Таза машина коды — LLVM IR арқылы компиляцияланды!)")
 		} else {
-			fmt.Println("  (Таза x86-64 машина коды — C++ жоқ, Go жоқ!)")
+			fmt.Println("  (Таза x86-64 машина коды — NASM бэкенді!)")
 		}
-		fmt.Println("═══════════════════════════════════════════════════════════")
+		fmt.Println("═══════════════════════════════════════════════════════════════════════")
 	} else {
-		// Run the program immediately
+		// Run binary
 		var cmd *exec.Cmd
-		args := flag.Args()[1:]
+		programArgs := fs.Args()[1:]
 		if filepath.IsAbs(outputBinary) || strings.Contains(outputBinary, string(filepath.Separator)) {
-			cmd = exec.Command(outputBinary, args...)
+			cmd = exec.Command(outputBinary, programArgs...)
 		} else {
-			cmd = exec.Command("." + string(filepath.Separator) + outputBinary, args...)
+			cmd = exec.Command("."+string(filepath.Separator)+outputBinary, programArgs...)
 		}
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
@@ -330,7 +583,6 @@ func main() {
 		}
 		runErr := cmd.Run()
 
-		// Clean up binary if it was a temporary run
 		if outputFlag == "" {
 			os.Remove(outputBinary)
 		}

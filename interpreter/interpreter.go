@@ -1,9 +1,13 @@
 package interpreter
 
 import (
+	"butaq/locales"
 	"butaq/parser"
 	"fmt"
+	"math"
+	"os"
 	"strings"
+	"time"
 )
 
 // Environment holds variables and functions
@@ -55,10 +59,11 @@ type StructInstance struct {
 
 // Interpreter executes the program AST
 type Interpreter struct {
-	Output strings.Builder
-	env    *Environment
-	funcs  map[string]*UserFunction
-	structDefs map[string]*parser.StructStatement
+	Output       strings.Builder
+	StreamOutput bool // if true, print directly to os.Stdout instead of buffering
+	env          *Environment
+	funcs        map[string]*UserFunction
+	structDefs   map[string]*parser.StructStatement
 }
 
 func New() *Interpreter {
@@ -91,7 +96,8 @@ func (ip *Interpreter) Run(program *parser.Program) (string, error) {
 func (ip *Interpreter) evalStatement(stmt parser.Statement, env *Environment) (interface{}, error) {
 	switch s := stmt.(type) {
 	case *parser.ExpressionStatement:
-		return ip.evalExpression(s.Expression, env)
+		_, err := ip.evalExpression(s.Expression, env)
+		return nil, err
 
 	case *parser.VarAssignStatement:
 		val, err := ip.evalExpression(s.Value, env)
@@ -102,11 +108,32 @@ func (ip *Interpreter) evalStatement(stmt parser.Statement, env *Environment) (i
 		return nil, nil
 
 	case *parser.PrintStatement:
+		if len(s.Values) > 0 {
+			var sb strings.Builder
+			for _, v := range s.Values {
+				val, err := ip.evalExpression(v, env)
+				if err != nil {
+					return nil, err
+				}
+				sb.WriteString(fmt.Sprintf("%v", val))
+			}
+			sb.WriteString("\n")
+			if ip.StreamOutput {
+				fmt.Fprint(os.Stdout, sb.String())
+			} else {
+				ip.Output.WriteString(sb.String())
+			}
+			return nil, nil
+		}
 		val, err := ip.evalExpression(s.Value, env)
 		if err != nil {
 			return nil, err
 		}
-		ip.Output.WriteString(fmt.Sprintf("%v\n", val))
+		if ip.StreamOutput {
+			fmt.Fprintf(os.Stdout, "%v\n", val)
+		} else {
+			ip.Output.WriteString(fmt.Sprintf("%v\n", val))
+		}
 		return nil, nil
 
 	case *parser.BlockStatement:
@@ -117,7 +144,10 @@ func (ip *Interpreter) evalStatement(stmt parser.Statement, env *Environment) (i
 				return nil, err
 			}
 			if res != nil {
-				return res, nil // propagates ReturnValue/Break/Continue
+				switch res.(type) {
+				case ReturnValue, BreakSignal, ContinueSignal:
+					return res, nil
+				}
 			}
 		}
 		return nil, nil
@@ -127,10 +157,20 @@ func (ip *Interpreter) evalStatement(stmt parser.Statement, env *Environment) (i
 		if err != nil {
 			return nil, err
 		}
+		var res interface{}
 		if isTruthy(cond) {
-			return ip.evalStatement(s.Consequence, env)
+			res, err = ip.evalStatement(s.Consequence, env)
 		} else if s.Alternative != nil {
-			return ip.evalStatement(s.Alternative, env)
+			res, err = ip.evalStatement(s.Alternative, env)
+		}
+		if err != nil {
+			return nil, err
+		}
+		if res != nil {
+			switch res.(type) {
+			case ReturnValue, BreakSignal, ContinueSignal:
+				return res, nil
+			}
 		}
 		return nil, nil
 
@@ -154,7 +194,9 @@ func (ip *Interpreter) evalStatement(stmt parser.Statement, env *Environment) (i
 				if _, ok := res.(ContinueSignal); ok {
 					continue
 				}
-				return res, nil // propagates ReturnValue
+				if _, ok := res.(ReturnValue); ok {
+					return res, nil
+				}
 			}
 		}
 		return nil, nil
@@ -265,7 +307,7 @@ func (ip *Interpreter) evalExpression(expr parser.Expression, env *Environment) 
 		if err != nil {
 			return nil, err
 		}
-		if e.Operator == "емес" {
+		if e.Operator == "емес" || resolveCanonicalOp(e.Operator) == "NOT" {
 			return !isTruthy(right), nil
 		}
 		return nil, fmt.Errorf("unknown unary operator: %s", e.Operator)
@@ -289,6 +331,13 @@ func (ip *Interpreter) evalExpression(expr parser.Expression, env *Environment) 
 		idxVal, err := ip.evalExpression(e.Index, env)
 		if err != nil {
 			return nil, err
+		}
+		if str, ok := left.(string); ok {
+			idx, ok := toInt64(idxVal)
+			if !ok || idx < 0 || idx >= int64(len(str)) {
+				return "", nil
+			}
+			return string(str[idx]), nil
 		}
 		arr, ok := left.([]interface{})
 		if !ok {
@@ -330,6 +379,51 @@ func (ip *Interpreter) evalExpression(expr parser.Expression, env *Environment) 
 			return nil, err
 		}
 		return fmt.Sprintf("%v%v", left, right), nil
+
+	case *parser.ToStrExpression:
+		val, err := ip.evalExpression(e.Value, env)
+		if err != nil {
+			return nil, err
+		}
+		return fmt.Sprintf("%v", val), nil
+
+	case *parser.StrEqExpression:
+		left, err := ip.evalExpression(e.Left, env)
+		if err != nil {
+			return nil, err
+		}
+		right, err := ip.evalExpression(e.Right, env)
+		if err != nil {
+			return nil, err
+		}
+		return fmt.Sprintf("%v", left) == fmt.Sprintf("%v", right), nil
+
+	case *parser.CharAtExpression:
+		strVal, err := ip.evalExpression(e.Str, env)
+		if err != nil {
+			return nil, err
+		}
+		idxVal, err := ip.evalExpression(e.Index, env)
+		if err != nil {
+			return nil, err
+		}
+		str := fmt.Sprintf("%v", strVal)
+		idx, ok := toInt64(idxVal)
+		if !ok || idx < 0 || int(idx) >= len(str) {
+			return "", fmt.Errorf("string index out of range")
+		}
+		return string(str[idx]), nil
+
+	case *parser.CharCodeExpression:
+		val, err := ip.evalExpression(e.Value, env)
+		if err != nil {
+			return nil, err
+		}
+		str := fmt.Sprintf("%v", val)
+		if len(str) == 0 {
+			return float64(0), nil
+		}
+		return float64(str[0]), nil
 
 	case *parser.StructCreateExpression:
 		def, ok := ip.structDefs[e.StructName]
@@ -404,39 +498,188 @@ func (ip *Interpreter) evalExpression(expr parser.Expression, env *Environment) 
 }
 
 func (ip *Interpreter) callBuiltin(name string, args []parser.Expression, env *Environment) (interface{}, error) {
-	// Simple implementations of common built-ins for Playground demonstration
-	switch name {
+	canonical := locales.CanonicalizeBuiltin(name)
+	switch canonical {
+	case "синус":
+		if len(args) < 1 {
+			return 0.0, nil
+		}
+		val, err := ip.evalExpression(args[0], env)
+		if err != nil {
+			return nil, err
+		}
+		if v, ok := toFloat64(val); ok {
+			return math.Sin(v), nil
+		}
+		return 0.0, nil
+
+	case "косинус":
+		if len(args) < 1 {
+			return 0.0, nil
+		}
+		val, err := ip.evalExpression(args[0], env)
+		if err != nil {
+			return nil, err
+		}
+		if v, ok := toFloat64(val); ok {
+			return math.Cos(v), nil
+		}
+		return 0.0, nil
+
+	case "түбір":
+		if len(args) < 1 {
+			return 0.0, nil
+		}
+		val, err := ip.evalExpression(args[0], env)
+		if err != nil {
+			return nil, err
+		}
+		if v, ok := toFloat64(val); ok {
+			return math.Sqrt(v), nil
+		}
+		return 0.0, nil
+
+	case "дәреже":
+		if len(args) < 2 {
+			return 0.0, nil
+		}
+		baseVal, _ := ip.evalExpression(args[0], env)
+		expVal, _ := ip.evalExpression(args[1], env)
+		b, _ := toFloat64(baseVal)
+		e, _ := toFloat64(expVal)
+		return math.Pow(b, e), nil
+
+	case "ұйықтау":
+		if len(args) > 0 {
+			val, _ := ip.evalExpression(args[0], env)
+			if v, ok := toFloat64(val); ok {
+				time.Sleep(time.Duration(v * float64(time.Second)))
+			}
+		}
+		return 0.0, nil
+
+	case "бүтін":
+		if len(args) < 1 {
+			return int64(0), nil
+		}
+		val, _ := ip.evalExpression(args[0], env)
+		if v, ok := toInt64(val); ok {
+			return v, nil
+		}
+		if v, ok := toFloat64(val); ok {
+			return int64(v), nil
+		}
+		return int64(0), nil
+
+	case "сан":
+		if len(args) < 1 {
+			return 0.0, nil
+		}
+		val, _ := ip.evalExpression(args[0], env)
+		if v, ok := toFloat64(val); ok {
+			return v, nil
+		}
+		return 0.0, nil
+
+	case "мәтін":
+		if len(args) < 1 {
+			return "", nil
+		}
+		val, _ := ip.evalExpression(args[0], env)
+		return fmt.Sprintf("%v", val), nil
+
+	case "таңба":
+		if len(args) < 1 {
+			return "", nil
+		}
+		val, _ := ip.evalExpression(args[0], env)
+		if code, ok := toInt64(val); ok {
+			return string(rune(code)), nil
+		}
+		if code, ok := toFloat64(val); ok {
+			return string(rune(int64(code))), nil
+		}
+		return "", nil
+
 	case "мд5":
 		val, _ := ip.evalExpression(args[0], env)
 		return fmt.Sprintf("[MD5 placeholder for %v]", val), nil
 	case "ша256":
 		val, _ := ip.evalExpression(args[0], env)
 		return fmt.Sprintf("[SHA256 placeholder for %v]", val), nil
+	case "уақыт":
+		return float64(time.Now().UnixNano()) / 1e9, nil
+
+	case "уақыт_мәтіні":
+		layout := "2006-01-02 15:04:05"
+		if len(args) > 0 {
+			if v, err := ip.evalExpression(args[0], env); err == nil {
+				s := fmt.Sprintf("%v", v)
+				// Basic conversion from %Y-%m-%d %H:%M:%S format
+				s = strings.ReplaceAll(s, "%Y", "2006")
+				s = strings.ReplaceAll(s, "%m", "01")
+				s = strings.ReplaceAll(s, "%d", "02")
+				s = strings.ReplaceAll(s, "%H", "15")
+				s = strings.ReplaceAll(s, "%M", "04")
+				s = strings.ReplaceAll(s, "%S", "05")
+				layout = s
+			}
+		}
+		return time.Now().Format(layout), nil
+
+	case "жаңа_тізім":
+		if len(args) < 2 {
+			return nil, fmt.Errorf("жаңа_тізім өлшем мен мәнді талап етеді")
+		}
+		sizeVal, _ := ip.evalExpression(args[0], env)
+		defVal, _ := ip.evalExpression(args[1], env)
+		sz, _ := toInt64(sizeVal)
+		res := make([]interface{}, sz)
+		for i := range res {
+			res[i] = defVal
+		}
+		return res, nil
 	}
 	return nil, fmt.Errorf("unknown function: %s", name)
 }
 
+func resolveCanonicalOp(op string) string {
+	for _, loc := range locales.Available() {
+		if tokName, ok := loc.Keywords[op]; ok {
+			return tokName
+		}
+	}
+	return op
+}
+
 func evalBinaryOp(left, right interface{}, op string) (interface{}, error) {
-	switch op {
-	case "қосу":
+	canonical := resolveCanonicalOp(op)
+	switch canonical {
+	case "PLUS", "қосу":
 		if l, ok := toFloat64(left); ok {
 			if r, ok := toFloat64(right); ok {
 				return l + r, nil
 			}
 		}
-	case "алу":
+		if ls, ok := left.(string); ok {
+			return fmt.Sprintf("%s%v", ls, right), nil
+		}
+		if rs, ok := right.(string); ok {
+			return fmt.Sprintf("%v%s", left, rs), nil
+		}
+	case "MINUS", "алу":
 		if l, ok := toFloat64(left); ok {
 			if r, ok := toFloat64(right); ok {
 				return l - r, nil
 			}
 		}
-	case "көбейту":
+	case "MUL", "көбейту":
 		if l, ok := toFloat64(left); ok {
 			if r, ok := toFloat64(right); ok {
 				return l * r, nil
 			}
 		}
-	case "бөлу":
+	case "DIV", "бөлу":
 		if l, ok := toFloat64(left); ok {
 			if r, ok := toFloat64(right); ok {
 				if r == 0 {
@@ -445,34 +688,48 @@ func evalBinaryOp(left, right interface{}, op string) (interface{}, error) {
 				return l / r, nil
 			}
 		}
-	case "тең":
+	case "EQ", "тең":
+		if l, ok := toFloat64(left); ok {
+			if r, ok := toFloat64(right); ok {
+				return l == r, nil
+			}
+		}
 		return left == right, nil
-	case "тең_емес":
+	case "NEQ", "тең_емес":
+		if l, ok := toFloat64(left); ok {
+			if r, ok := toFloat64(right); ok {
+				return l != r, nil
+			}
+		}
 		return left != right, nil
-	case "үлкен":
+	case "GT", "үлкен":
 		if l, ok := toFloat64(left); ok {
 			if r, ok := toFloat64(right); ok {
 				return l > r, nil
 			}
 		}
-	case "кіші":
+	case "LT", "кіші":
 		if l, ok := toFloat64(left); ok {
 			if r, ok := toFloat64(right); ok {
 				return l < r, nil
 			}
 		}
-	case "үлкен_тең":
+	case "GTE", "үлкен_тең":
 		if l, ok := toFloat64(left); ok {
 			if r, ok := toFloat64(right); ok {
 				return l >= r, nil
 			}
 		}
-	case "кіші_тең":
+	case "LTE", "кіші_тең":
 		if l, ok := toFloat64(left); ok {
 			if r, ok := toFloat64(right); ok {
 				return l <= r, nil
 			}
 		}
+	case "AND", "және":
+		return isTruthy(left) && isTruthy(right), nil
+	case "OR", "немесе":
+		return isTruthy(left) || isTruthy(right), nil
 	}
 	return nil, fmt.Errorf("invalid operation: %v %s %v", left, op, right)
 }

@@ -4,6 +4,7 @@ import (
 	"butaq/lexer"
 	"bytes"
 	"fmt"
+	"strings"
 )
 
 // ---------------------------------------------------------------------------
@@ -378,17 +379,21 @@ func (fw *FileWriteStatement) String() string {
 // Statements
 // ---------------------------------------------------------------------------
 
-// x 10 болсын
+// x 10 болсын / болсын x = 10 / x = 10
 type VarAssignStatement struct {
 	Pos
-	Name  *Identifier
-	Value Expression
+	Name          *Identifier
+	Value         Expression
+	IsDeclaration bool
 }
 
 func (vs *VarAssignStatement) statementNode()       {}
 func (vs *VarAssignStatement) TokenLiteral() string { return "болсын" }
 func (vs *VarAssignStatement) String() string {
-	return vs.Name.String() + " " + vs.Value.String() + " болсын"
+	if vs.IsDeclaration {
+		return "болсын " + vs.Name.String() + " = " + vs.Value.String()
+	}
+	return vs.Name.String() + " = " + vs.Value.String()
 }
 
 // adam.аты "Али" болсын
@@ -430,15 +435,28 @@ func (fs *FreeStatement) statementNode()       {}
 func (fs *FreeStatement) TokenLiteral() string { return "бос" }
 func (fs *FreeStatement) String() string       { return "free(" + fs.Value.String() + ")" }
 
-// "Сәлем" жазу
+// "Сәлем" жазу немесе жазу(arg1, arg2, ...)
 type PrintStatement struct {
 	Pos
-	Value Expression
+	Value  Expression
+	Values []Expression
 }
 
 func (ps *PrintStatement) statementNode()       {}
 func (ps *PrintStatement) TokenLiteral() string { return "жазу" }
-func (ps *PrintStatement) String() string       { return ps.Value.String() + " жазу" }
+func (ps *PrintStatement) String() string {
+	if len(ps.Values) > 0 {
+		var parts []string
+		for _, v := range ps.Values {
+			parts = append(parts, v.String())
+		}
+		return "жазу(" + strings.Join(parts, ", ") + ")"
+	}
+	if ps.Value != nil {
+		return ps.Value.String() + " жазу"
+	}
+	return "жазу()"
+}
 
 // x 5 үлкен егер { ... } әйтпесе { ... }
 type IfStatement struct {
