@@ -379,18 +379,22 @@ func (fw *FileWriteStatement) String() string {
 // Statements
 // ---------------------------------------------------------------------------
 
-// x 10 болсын / болсын x = 10 / x = 10
+// x 10 болсын / болсын x = 10 / x = 10 / let x = 10 / var x = 10
 type VarAssignStatement struct {
 	Pos
 	Name          *Identifier
 	Value         Expression
 	IsDeclaration bool
+	IsMutable     bool
 }
 
 func (vs *VarAssignStatement) statementNode()       {}
 func (vs *VarAssignStatement) TokenLiteral() string { return "болсын" }
 func (vs *VarAssignStatement) String() string {
 	if vs.IsDeclaration {
+		if !vs.IsMutable {
+			return "тұрақты " + vs.Name.String() + " = " + vs.Value.String()
+		}
 		return "болсын " + vs.Name.String() + " = " + vs.Value.String()
 	}
 	return vs.Name.String() + " = " + vs.Value.String()

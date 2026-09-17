@@ -212,9 +212,9 @@ func handleTranspile(args []string) {
 	prog := p.ParseProgram()
 
 	if len(p.ErrorsStructured()) > 0 {
-		fmt.Println("❌ Синтаксистік қателер:")
+		fmt.Printf("❌ %s:\n", srcLoc.Message("syntax_errors", "Синтаксистік қателер"))
 		for _, e := range p.ErrorsStructured() {
-			renderError(inputFile, string(sourceCode), e.Line, e.Col, e.Message, "Синтаксис")
+			renderError(inputFile, string(sourceCode), e.Line, e.Col, e.Message, srcLoc.Message("syntax", "Синтаксис"), srcLoc)
 		}
 		os.Exit(1)
 	}
@@ -313,12 +313,13 @@ func handleBuild(args []string) {
 	// ── 1. Лексер + Парсер ──────────────────────────────────────────────────
 	l := lexer.NewWithLocale(string(sourceCode), activeLocale)
 	p := parser.New(l)
+	p.SetLocale(activeLocale)
 	program := p.ParseProgram()
 
 	if len(p.ErrorsStructured()) != 0 {
-		fmt.Println("❌ Синтаксистік қателер:")
+		fmt.Printf("❌ %s:\n", activeLocale.Message("syntax_errors", "Синтаксистік қателер"))
 		for _, e := range p.ErrorsStructured() {
-			renderError(inputFile, string(sourceCode), e.Line, e.Col, e.Message, "Синтаксис")
+			renderError(inputFile, string(sourceCode), e.Line, e.Col, e.Message, activeLocale.Message("syntax", "Синтаксис"), activeLocale)
 		}
 		os.Exit(1)
 	}
@@ -336,12 +337,13 @@ func handleBuild(args []string) {
 	// ── 2. Статикалық типтер тексеру ───────────────────────────────────────
 	tcEnv := typechecker.NewTypeEnv()
 	tc := typechecker.New()
+	tc.SetLocale(activeLocale)
 	tc.Check(program, tcEnv)
 
 	if len(tc.Errors) != 0 {
-		fmt.Println("❌ Тип қателері:")
+		fmt.Printf("❌ %s:\n", activeLocale.Message("type_errors", "Тип қателері"))
 		for _, e := range tc.Errors {
-			renderError(inputFile, string(sourceCode), e.Line, e.Col, e.Message, "Тип")
+			renderError(inputFile, string(sourceCode), e.Line, e.Col, e.Message, activeLocale.Message("type", "Тип"), activeLocale)
 		}
 		os.Exit(1)
 	}
@@ -600,8 +602,21 @@ func printNumbered(code string) {
 	}
 }
 
-func renderError(filename string, sourceCode string, line int, col int, message string, errorType string) {
-	fmt.Printf("\n\033[1;31m%s қатесі (жол %d, баған %d):\033[0m %s\n", errorType, line, col, message)
+func renderError(filename string, sourceCode string, line int, col int, message string, errorType string, loc *locales.Locale) {
+	code := "kk"
+	if loc != nil {
+		code = loc.Code
+	}
+	switch code {
+	case "en":
+		fmt.Printf("\n\033[1;31m%s error (line %d, col %d):\033[0m %s\n", errorType, line, col, message)
+	case "ru":
+		fmt.Printf("\n\033[1;31mОшибка %s (строка %d, колонка %d):\033[0m %s\n", strings.ToLower(errorType), line, col, message)
+	case "it":
+		fmt.Printf("\n\033[1;31mErrore di %s (linea %d, colonna %d):\033[0m %s\n", strings.ToLower(errorType), line, col, message)
+	default:
+		fmt.Printf("\n\033[1;31m%s қатесі (жол %d, баған %d):\033[0m %s\n", errorType, line, col, message)
+	}
 
 	lines := strings.Split(sourceCode, "\n")
 	if line > 0 && line <= len(lines) {
@@ -626,37 +641,74 @@ func renderError(filename string, sourceCode string, line int, col int, message 
 		fmt.Printf("      \033[34m|\033[0m %s\033[1;31m^\033[0m\n", caretLine)
 	}
 
-	hint := getHint(message)
+	hint := getHint(message, loc)
 	if hint != "" {
-		fmt.Printf(" \033[1;36mКеңес/Подсказка:\033[0m %s\n", hint)
+		hintLabel := "Кеңес"
+		switch code {
+		case "en":
+			hintLabel = "Hint"
+		case "ru":
+			hintLabel = "Подсказка"
+		case "it":
+			hintLabel = "Suggerimento"
+		}
+		fmt.Printf(" \033[1;36m%s:\033[0m %s\n", hintLabel, hint)
 	}
 	fmt.Println()
 }
 
-func getHint(msg string) string {
-	if strings.Contains(msg, "айнымалысы жарияланбаған") || strings.Contains(msg, "undeclared var") || strings.Contains(msg, "undeclared variable") {
-		return "Айнымалыны бірінші рет қолданбас бұрын оған мән меншіктеңіз (мысалы: айнымалы болсын мән) / Перед использованием переменной объявите её с помощью 'болсын' (например: x болсын 5)."
+func getHint(msg string, loc *locales.Locale) string {
+	code := "kk"
+	if loc != nil {
+		code = loc.Code
 	}
-	if strings.Contains(msg, "өзгертуге болмайды") {
-		return "Айнымалының типін өзгертуге рұқсат етілмейді. Басқа жаңа айнымалыны қолданыңыз / Изменение типа переменной не допускается. Используйте новую переменную."
+	if strings.Contains(msg, "айнымалысы жарияланбаған") || strings.Contains(msg, "undeclared") || strings.Contains(msg, "необъявленная") || strings.Contains(msg, "non dichiarata") {
+		switch code {
+		case "en":
+			return "Declare variable before use with 'val' (or 'var' for mutable) e.g.: val x = 5"
+		case "ru":
+			return "Объявите переменную перед использованием с помощью 'пусть' (или 'перем') например: пусть x = 5"
+		case "it":
+			return "Dichiara la variabile prima dell'uso con 'val' (o 'var' per mutabile) es.: val x = 5"
+		default:
+			return "Айнымалыны қолданбас бұрын оны 'болсын' (немесе 'айнымалы') арқылы жариялаңыз: болсын x = 5"
+		}
 	}
-	if strings.Contains(msg, "функциясы табылмады") {
-		return "Функцияның атауын тексеріңіз немесе оны жариялаңыз / Проверьте имя функции или объявите её."
+	if strings.Contains(msg, "тұрақты") || strings.Contains(msg, "immutable") || strings.Contains(msg, "неизменяемой") || strings.Contains(msg, "immutabile") {
+		switch code {
+		case "en":
+			return "Use 'var' or 'let mut' to declare a mutable variable"
+		case "ru":
+			return "Используйте 'перем' для объявления изменяемой переменной"
+		case "it":
+			return "Usa 'var' per dichiarare una variabile mutabile"
+		default:
+			return "Айнымалының мәнін өзгерту үшін 'айнымалы' (var) қолданыңыз"
+		}
 	}
-	if strings.Contains(msg, "салыстыру операторы үшін типтер сәйкес болуы керек") {
-		return "Әр түрлі типтегі мәндерді салыстыруға болмайды. Санды мәтінге немесе керісінше түрлендіріңіз / Нельзя сравнивать значения разных типов. Приведите их к одному типу."
+	if strings.Contains(msg, "өзгертуге болмайды") || strings.Contains(msg, "cannot change type") || strings.Contains(msg, "нельзя изменить тип") || strings.Contains(msg, "cambiare il tipo") {
+		switch code {
+		case "en":
+			return "Changing variable type is not allowed. Use a new variable instead"
+		case "ru":
+			return "Изменение типа переменной не допускается. Используйте новую переменную"
+		case "it":
+			return "Non è consentito modificare il tipo della variabile. Usa una nuova variabile"
+		default:
+			return "Айнымалының типін өзгертуге болмайды. Жаңа айнымалыны қолданыңыз"
+		}
 	}
-	if strings.Contains(msg, "егер шарты АҚИҚАТ болуы керек") {
-		return "'егер' шарты АҚИҚАТ (bool) типіндегі мән болуы тиіс / Условие 'егер' должно возвращать логическое значение (АҚИҚАТ/ЖАЛҒАН)."
-	}
-	if strings.Contains(msg, "әзірше шарты АҚИҚАТ болуы керек") {
-		return "'әзірше' шарты АҚИҚАТ (bool) типіндегі мән болуы тиіс / Условие 'әзірше' должно возвращать логическое значение."
-	}
-	if strings.Contains(msg, "күтілді") || strings.Contains(msg, "expected") {
-		return "Синтаксисті тексеріңіз. Күтілген таңбаның дұрыс қойылғанына көз жеткізіңіз / Проверьте синтаксис. Убедитесь, что все скобки и ключевые слова расставлены верно."
-	}
-	if strings.Contains(msg, "шарты жоқ") {
-		return "Шартты өрнекті көрсетіңіз / Укажите условное выражение."
+	if strings.Contains(msg, "табылмады") || strings.Contains(msg, "not found") || strings.Contains(msg, "не найдена") || strings.Contains(msg, "non trovata") {
+		switch code {
+		case "en":
+			return "Check the function name or declare it before calling"
+		case "ru":
+			return "Проверьте имя функции или объявите её перед вызовом"
+		case "it":
+			return "Controlla il nome della funzione o dichiarala prima della chiamata"
+		default:
+			return "Функцияның атауын тексеріңіз немесе оны шақырмас бұрын жариялаңыз"
+		}
 	}
 	return ""
 }

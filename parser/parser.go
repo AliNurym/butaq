@@ -2,6 +2,7 @@ package parser
 
 import (
 	"butaq/lexer"
+	"butaq/locales"
 	"fmt"
 	"strconv"
 	"strings"
@@ -11,14 +12,29 @@ type ParseError struct {
 	Message string
 	Line    int
 	Col     int
+	Locale  *locales.Locale
 }
 
 func (e ParseError) Error() string {
-	return fmt.Sprintf("[жол %d, баған %d] %s", e.Line, e.Col, e.Message)
+	code := "kk"
+	if e.Locale != nil {
+		code = e.Locale.Code
+	}
+	switch code {
+	case "en":
+		return fmt.Sprintf("[line %d, col %d] %s", e.Line, e.Col, e.Message)
+	case "ru":
+		return fmt.Sprintf("[строка %d, колонка %d] %s", e.Line, e.Col, e.Message)
+	case "it":
+		return fmt.Sprintf("[linea %d, colonna %d] %s", e.Line, e.Col, e.Message)
+	default:
+		return fmt.Sprintf("[жол %d, баған %d] %s", e.Line, e.Col, e.Message)
+	}
 }
 
 type Parser struct {
-	l *lexer.Lexer
+	l      *lexer.Lexer
+	locale *locales.Locale
 
 	curToken  lexer.Token
 	peekToken lexer.Token
@@ -26,10 +42,17 @@ type Parser struct {
 }
 
 func New(l *lexer.Lexer) *Parser {
-	p := &Parser{l: l, errors: []ParseError{}}
+	loc := l.Locale()
+	p := &Parser{l: l, errors: []ParseError{}, locale: loc}
 	p.nextToken()
 	p.nextToken()
 	return p
+}
+
+func (p *Parser) SetLocale(loc *locales.Locale) {
+	if loc != nil {
+		p.locale = loc
+	}
 }
 
 func (p *Parser) Errors() []string {
@@ -54,6 +77,7 @@ func (p *Parser) errorf(format string, args ...interface{}) {
 		Message: fmt.Sprintf(format, args...),
 		Line:    p.curToken.Line,
 		Col:     p.curToken.Col,
+		Locale:  p.locale,
 	})
 }
 
@@ -375,6 +399,8 @@ func (p *Parser) parseInfixExpression(precedence int) Expression {
 		p.peekToken.Type != lexer.RPAREN &&
 		p.peekToken.Type != lexer.RBRACKET &&
 		p.peekToken.Type != lexer.COLON &&
+		p.peekToken.Type != lexer.LBRACE &&
+		p.peekToken.Type != lexer.END &&
 		precedence < p.tokenPrecedence(p.peekToken.Type) {
 
 		p.nextToken() // cur = operator
@@ -398,6 +424,10 @@ func (p *Parser) parseIndentedBlock(parentCol int) *BlockStatement {
 
 	startLine := p.curToken.Line
 	for p.peekToken.Type != lexer.EOF {
+		if p.peekToken.Type == lexer.END {
+			p.nextToken() // consume END
+			break
+		}
 		if p.peekToken.Line > startLine && p.peekToken.Col <= parentCol {
 			break
 		}
@@ -405,6 +435,9 @@ func (p *Parser) parseIndentedBlock(parentCol int) *BlockStatement {
 			break
 		}
 		p.nextToken()
+		if p.curToken.Type == lexer.END {
+			break
+		}
 		if p.curToken.Type == lexer.COLON {
 			continue
 		}
@@ -419,18 +452,30 @@ func (p *Parser) parseIndentedBlock(parentCol int) *BlockStatement {
 func (p *Parser) parseStatement() Statement {
 	line, col := p.curToken.Line, p.curToken.Col
 
-	// 1. Modern VAR: болсын i = 0 / let i = 0 / sia i = 0 / пусть i = 0
-	if p.curToken.Type == lexer.VAR && p.peekToken.Type == lexer.IDENTIFIER {
-		p.nextToken() // cur = identifier
-		varName := p.curToken.Literal
-		idNode := p.setPos(&Identifier{Value: varName}).(*Identifier)
-		if p.peekToken.Type == lexer.ASSIGN {
-			p.nextToken() // cur = =
-			p.nextToken() // cur = start of value expr
-			val := p.parseInfixExpression(PREC_LOWEST)
-			stmt := &VarAssignStatement{Name: idNode, Value: val, IsDeclaration: true}
-			p.setPosAt(stmt, line, col)
-			return stmt
+	// 1. Modern VAR/VAL:
+	// VAR: болсын i = 0 / айнымалы i = 0 / var i = 0 (mutable)
+	// VAL: тұрақты x = 5 / val x = 5 / let x = 5 / const x = 5 / пусть x = 5 / sia x = 5 (immutable)
+	if p.curToken.Type == lexer.VAR || p.curToken.Type == lexer.VAL {
+		isMutable := (p.curToken.Type == lexer.VAR)
+
+		// Support "let mut x = 0"
+		if p.peekToken.Literal == "mut" || (p.peekToken.Type == lexer.VAR && p.peekToken.Literal == "var") {
+			p.nextToken() // consume mut
+			isMutable = true
+		}
+
+		if p.peekToken.Type == lexer.IDENTIFIER {
+			p.nextToken() // cur = identifier
+			varName := p.curToken.Literal
+			idNode := p.setPos(&Identifier{Value: varName}).(*Identifier)
+			if p.peekToken.Type == lexer.ASSIGN {
+				p.nextToken() // cur = =
+				p.nextToken() // cur = start of value expr
+				val := p.parseInfixExpression(PREC_LOWEST)
+				stmt := &VarAssignStatement{Name: idNode, Value: val, IsDeclaration: true, IsMutable: isMutable}
+				p.setPosAt(stmt, line, col)
+				return stmt
+			}
 		}
 	}
 
@@ -1446,7 +1491,7 @@ func (p *Parser) parseBlockStatement() *BlockStatement {
 	block := &BlockStatement{Statements: []Statement{}}
 	p.nextToken() // skip {
 
-	for p.curToken.Type != lexer.RBRACE && p.curToken.Type != lexer.EOF {
+	for p.curToken.Type != lexer.RBRACE && p.curToken.Type != lexer.END && p.curToken.Type != lexer.EOF {
 		// Handle nested function definitions inside blocks
 		var stmt Statement
 		if p.curToken.Type == lexer.FUNC {

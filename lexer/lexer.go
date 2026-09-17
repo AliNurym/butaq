@@ -59,6 +59,8 @@ const (
 	COLON  // :
 	ASSIGN // =
 	THEN   // сонда, then, allora, тогда
+	END    // соңы, end, fine, конец (explicit block terminator)
+	VAL    // тұрақты, val, let, const, знач, cost, sia (immutable binding)
 	NEWLINE
 	INDENT
 	DEDENT
@@ -180,10 +182,14 @@ var TokenNameToType = map[string]TokenType{
 	"TRY_ERROR":     TRY_ERROR,
 	"ERROR_LITERAL": ERROR_LITERAL,
 	"INTERFACE":     INTERFACE,
+	"VAL":           VAL,
+	"END":           END,
 }
 
 var TypeToTokenName = map[TokenType]string{
 	VAR:           "VAR",
+	VAL:           "VAL",
+	END:           "END",
 	IF:            "IF",
 	ELSE:          "ELSE",
 	WHILE:         "WHILE",

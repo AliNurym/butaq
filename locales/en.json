@@ -2,7 +2,11 @@
   "code": "en",
   "name": "English",
   "keywords": {
-    "let": "VAR",
+    "var": "VAR",
+    "let": "VAL",
+    "val": "VAL",
+    "const": "VAL",
+    "end": "END",
     "then": "THEN",
     "if": "IF",
     "else": "ELSE",
@@ -85,5 +89,13 @@
     "b64_decode": "b64_decode",
     "thread_wait": "thread_wait",
     "new_array": "new_array"
+  },
+  "messages": {
+    "syntax_errors": "Syntax errors",
+    "type_errors": "Type errors",
+    "syntax": "Syntax",
+    "type": "Type",
+    "hint": "Hint",
+    "immutable_mutation": "cannot mutate immutable variable '%s'. Use 'var' or 'let mut' for mutable variables"
   }
 }

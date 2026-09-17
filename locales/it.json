@@ -2,7 +2,12 @@
   "code": "it",
   "name": "Italiano",
   "keywords": {
-    "sia": "VAR",
+    "var": "VAR",
+    "mutabile": "VAR",
+    "sia": "VAL",
+    "val": "VAL",
+    "cost": "VAL",
+    "fine": "END",
     "allora": "THEN",
     "se": "IF",
     "altrimenti": "ELSE",
@@ -85,5 +90,13 @@
     "b64_decodifica": "b64_decode",
     "attendi_filo": "thread_wait",
     "nuovo_array": "new_array"
+  },
+  "messages": {
+    "syntax_errors": "Errori di sintassi",
+    "type_errors": "Errori di tipo",
+    "syntax": "Sintassi",
+    "type": "Tipo",
+    "hint": "Suggerimento",
+    "immutable_mutation": "impossibile modificare la variabile immutabile '%s'. Usa 'var' per le variabili mutabili"
   }
 }

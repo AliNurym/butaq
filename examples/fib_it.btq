@@ -4,7 +4,7 @@ funzione fib(n)
 
 stampa("=== Serie di Fibonacci ===")
 
-sia i = 0
+var i = 0
 mentre i <= 10
     stampa("fib(", i, ") = ", fib(i))
     i = i + 1

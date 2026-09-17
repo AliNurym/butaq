@@ -51,12 +51,16 @@ func MakeResultType(underlying Type) Type {
 // ---------------------------------------------------------------------------
 
 type TypeEnv struct {
-	store map[string]Type
-	outer *TypeEnv
+	store      map[string]Type
+	immutables map[string]bool
+	outer      *TypeEnv
 }
 
 func NewTypeEnv() *TypeEnv {
-	return &TypeEnv{store: make(map[string]Type)}
+	return &TypeEnv{
+		store:      make(map[string]Type),
+		immutables: make(map[string]bool),
+	}
 }
 
 func NewEnclosedTypeEnv(outer *TypeEnv) *TypeEnv {
@@ -82,6 +86,25 @@ func (e *TypeEnv) SetLocal(name string, val Type) {
 	e.store[name] = val
 }
 
+func (e *TypeEnv) SetImmutable(name string, isImmutable bool) {
+	if e.immutables == nil {
+		e.immutables = make(map[string]bool)
+	}
+	e.immutables[name] = isImmutable
+}
+
+func (e *TypeEnv) IsImmutable(name string) bool {
+	if e.immutables != nil {
+		if imm, ok := e.immutables[name]; ok {
+			return imm
+		}
+	}
+	if e.outer != nil {
+		return e.outer.IsImmutable(name)
+	}
+	return false
+}
+
 // ---------------------------------------------------------------------------
 // Function signatures
 // ---------------------------------------------------------------------------
@@ -100,10 +123,24 @@ type TypeError struct {
 	Message string
 	Line    int
 	Col     int
+	Locale  *locales.Locale
 }
 
 func (e TypeError) Error() string {
-	return fmt.Sprintf("Тип қатесі (%d:%d): %s", e.Line, e.Col, e.Message)
+	code := "kk"
+	if e.Locale != nil {
+		code = e.Locale.Code
+	}
+	switch code {
+	case "en":
+		return fmt.Sprintf("Type error (%d:%d): %s", e.Line, e.Col, e.Message)
+	case "ru":
+		return fmt.Sprintf("Ошибка типа (%d:%d): %s", e.Line, e.Col, e.Message)
+	case "it":
+		return fmt.Sprintf("Errore di tipo (%d:%d): %s", e.Line, e.Col, e.Message)
+	default:
+		return fmt.Sprintf("Тип қатесі (%d:%d): %s", e.Line, e.Col, e.Message)
+	}
 }
 
 type TypeChecker struct {
@@ -113,8 +150,15 @@ type TypeChecker struct {
 	interfaces  map[string]*parser.InterfaceStatement
 	Errors      []TypeError
 	currentFunc string // tracks which function we are checking
+	locale      *locales.Locale
 	curLine     int
 	curCol      int
+}
+
+func (tc *TypeChecker) SetLocale(loc *locales.Locale) {
+	if loc != nil {
+		tc.locale = loc
+	}
 }
 
 func New() *TypeChecker {
@@ -491,6 +535,7 @@ func (tc *TypeChecker) errorf(format string, args ...interface{}) {
 		Message: fmt.Sprintf(format, args...),
 		Line:    tc.curLine,
 		Col:     tc.curCol,
+		Locale:  tc.locale,
 	})
 }
 
@@ -905,14 +950,26 @@ func (tc *TypeChecker) Check(node parser.Node, env *TypeEnv) Type {
 		existingType, ok := env.Get(node.Name.Value)
 		if !ok {
 			env.Set(node.Name.Value, valType)
+			if node.IsDeclaration && !node.IsMutable {
+				env.SetImmutable(node.Name.Value, true)
+			}
 		} else {
+			if node.IsDeclaration {
+				env.Set(node.Name.Value, valType)
+				env.SetImmutable(node.Name.Value, !node.IsMutable)
+			} else {
+				if env.IsImmutable(node.Name.Value) {
+					tc.errorf(tc.formatImmutableError(node.Name.Value))
+					return valType
+				}
+			}
 			if existingType != valType && valType != UNKNOWN {
 				if strings.HasPrefix(string(existingType), "ИНТЕРФЕЙС_") && strings.HasPrefix(string(valType), "ҚҰРЫЛЫМ_") && tc.satisfiesInterface(valType, existingType) {
 					// Allowed interface assignment
 				} else if strings.HasPrefix(string(existingType), "ҚҰРЫЛЫМ_") && valType == INT_TYPE {
 					// Null pointer assignment allowed
 				} else {
-					tc.errorf("'%s' айнымалысының типін өзгертуге болмайды (%s -> %s)", node.Name.Value, existingType, valType)
+					tc.errorf(tc.formatTypeChangeError(node.Name.Value, existingType, valType))
 				}
 			}
 		}
@@ -1307,4 +1364,38 @@ func (tc *TypeChecker) registerFunction(fs *parser.FunctionStatement, env *TypeE
 		ReturnType: UNKNOWN, // inferred from body
 	}
 	tc.funcs[fs.Name] = sig
+}
+
+func (tc *TypeChecker) formatImmutableError(name string) string {
+	code := "kk"
+	if tc.locale != nil {
+		code = tc.locale.Code
+	}
+	switch code {
+	case "en":
+		return fmt.Sprintf("cannot mutate immutable variable '%s'. Use 'var' or 'let mut' for mutable variables", name)
+	case "ru":
+		return fmt.Sprintf("переменная '%s' является неизменяемой (immutable). Для изменения используйте 'перем'", name)
+	case "it":
+		return fmt.Sprintf("impossibile modificare la variabile immutabile '%s'. Usa 'var' per le variabili mutabili", name)
+	default:
+		return fmt.Sprintf("'%s' айнымалысы тұрақты (immutable), оның мәнін өзгерту мүмкін емес. Өзгерту үшін 'айнымалы' қолданыңыз", name)
+	}
+}
+
+func (tc *TypeChecker) formatTypeChangeError(name string, oldType, newType Type) string {
+	code := "kk"
+	if tc.locale != nil {
+		code = tc.locale.Code
+	}
+	switch code {
+	case "en":
+		return fmt.Sprintf("cannot change type of variable '%s' (%s -> %s)", name, oldType, newType)
+	case "ru":
+		return fmt.Sprintf("нельзя изменить тип переменной '%s' (%s -> %s)", name, oldType, newType)
+	case "it":
+		return fmt.Sprintf("impossibile cambiare il tipo della variabile '%s' (%s -> %s)", name, oldType, newType)
+	default:
+		return fmt.Sprintf("'%s' айнымалысының типін өзгертуге болмайды (%s -> %s)", name, oldType, newType)
+	}
 }

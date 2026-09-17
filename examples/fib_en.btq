@@ -4,7 +4,7 @@ func fib(n)
 
 print("=== Fibonacci Series ===")
 
-let i = 0
+var i = 0
 while i <= 10
     print("fib(", i, ") = ", fib(i))
     i = i + 1

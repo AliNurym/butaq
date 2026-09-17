@@ -19,10 +19,21 @@ type Locale struct {
 	Name     string            `json:"name"`
 	Keywords map[string]string `json:"keywords"` // localized keyword -> internal token name ("болсын" -> "VAR")
 	Builtins map[string]string `json:"builtins"` // localized builtin -> canonical name ("мәтін_ұзындығы" -> "str_len")
+	Messages map[string]string `json:"messages,omitempty"` // localized compiler diagnostic messages
 
 	// Computed reverse lookups
 	TokenToKeyword map[string]string `json:"-"` // token name -> preferred localized keyword ("VAR" -> "let")
 	BuiltinToLocal map[string]string `json:"-"` // canonical builtin -> localized name ("str_len" -> "str_length")
+}
+
+// Message returns localized message for key, or fallback if not found.
+func (l *Locale) Message(key string, fallback string) string {
+	if l != nil && l.Messages != nil {
+		if msg, ok := l.Messages[key]; ok && msg != "" {
+			return msg
+		}
+	}
+	return fallback
 }
 
 var (

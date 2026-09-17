@@ -48,7 +48,11 @@ func (t *Transpiler) transpileStatement(stmt parser.Statement, depth int) string
 	case *parser.VarAssignStatement:
 		valStr := t.transpileExpression(s.Value)
 		if s.IsDeclaration {
-			varKw := t.targetLocale.KeywordForToken("VAR")
+			tokName := "VAR"
+			if !s.IsMutable {
+				tokName = "VAL"
+			}
+			varKw := t.targetLocale.KeywordForToken(tokName)
 			return fmt.Sprintf("%s%s %s = %s", indent, varKw, s.Name.Value, valStr)
 		}
 		return fmt.Sprintf("%s%s = %s", indent, s.Name.Value, valStr)
