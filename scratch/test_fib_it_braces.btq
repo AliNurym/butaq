@@ -1,0 +1,14 @@
+funzione fib(n) {
+    se n <= 1 {
+        ritorna n
+    }
+    ritorna fib(n - 1) + fib(n - 2)
+}
+
+stampa("=== Serie di Fibonacci ===")
+
+var i = 0
+mentre i <= 10 {
+    stampa("fib(", i, ") = ", fib(i))
+    i = i + 1
+}

@@ -1,0 +1,18 @@
+funzione fib(n)
+    se n <= 1 allora ritorna n
+    var a = 0
+    var b = 1
+    var i = 2
+    mentre i <= n
+        var c = a + b
+        a = b
+        b = c
+        i = i + 1
+    ritorna b
+
+stampa("=== Fibonacci Rapido O(n) ===")
+
+var i = 0
+mentre i <= 10
+    stampa("fib(", i, ") = ", fib(i))
+    i = i + 1

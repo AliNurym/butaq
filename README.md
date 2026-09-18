@@ -5,6 +5,7 @@
 [![LLVM](https://img.shields.io/badge/backend-LLVM%2018%20%2F%20NASM-blue.svg)]()
 [![WASM](https://img.shields.io/badge/web-WebAssembly%20Playground-purple.svg)]()
 [![Locales](https://img.shields.io/badge/locales-KK%20%7C%20EN%20%7C%20IT%20%7C%20RU-orange.svg)]()
+[![Ғылыми Жоба](https://img.shields.io/badge/ITECX-Ғылыми%20жоба%20(Құжат)-red.svg)](docs/GYLYMI_ZHOBA.md)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)]()
 
 ---
